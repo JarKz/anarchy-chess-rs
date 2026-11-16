@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 bevy = { version = "0.20.1", features = ["bevy_ui", "bevy_ui_widgets"] }
+derive_builder = "0.20.2"

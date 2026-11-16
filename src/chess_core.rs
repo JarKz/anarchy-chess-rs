@@ -3,8 +3,8 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use crate::chess_core::board::{BoardCell, ChessBoardPlugin, Label};
 use crate::chess_core::pieces::ChessPiecesPlugin;
 
-mod board;
-mod pieces;
+pub mod board;
+pub mod pieces;
 
 pub struct ChessCorePlugin {}
 

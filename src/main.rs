@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::chess_core::ChessCorePlugin;
 
 mod chess_core;
+mod fen;
 
 fn main() {
     App::new()

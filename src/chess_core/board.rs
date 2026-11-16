@@ -31,9 +31,10 @@ fn resize_board(
     let cell_size = visual_settings.cell_size();
 
     for (cell, mut transform) in board_query {
+        let cell_index = visual_settings.cell_index(cell);
         transform.scale = Vec3::splat(cell_size);
 
-        let cell_position = visual_settings.cell_position(cell.row, cell.col);
+        let cell_position = visual_settings.cell_position(cell_index.0, cell_index.1);
         transform.translation.x = cell_position.0;
         transform.translation.y = cell_position.1;
     }
@@ -76,15 +77,15 @@ pub struct Label {
 
 #[derive(Component, Hash, PartialEq, Eq, Clone)]
 pub struct BoardCell {
-    row: u32,
-    col: u32,
+    row: char,
+    col: char,
 }
 
-impl From<(u32, u32)> for BoardCell {
-    fn from(value: (u32, u32)) -> Self {
+impl From<(char, char)> for BoardCell {
+    fn from(value: (char, char)) -> Self {
         Self {
             row: value.0,
-            col: value.1
+            col: value.1,
         }
     }
 }
@@ -95,6 +96,13 @@ pub struct VisualSettings {
 
     min_board_size: u32,
     max_board_size: u32,
+
+    orientation: BoardOrientation,
+}
+
+pub enum BoardOrientation {
+    LightSide,
+    DarkSide,
 }
 
 impl VisualSettings {
@@ -129,6 +137,38 @@ impl VisualSettings {
         )
     }
 
+    fn cell_name(&self, mut row: u32, mut col: u32) -> BoardCell {
+        match self.orientation {
+            BoardOrientation::LightSide => {
+                row = Self::CELLS_IN_ROW as u32 - row - 1;
+            }
+            BoardOrientation::DarkSide => {
+                col = Self::CELLS_IN_ROW as u32 - col - 1;
+            }
+        }
+
+        BoardCell {
+            row: char::from_u32('1' as u32 + row).unwrap(),
+            col: char::from_u32('a' as u32 + col).unwrap(),
+        }
+    }
+
+    fn cell_index(&self, board_cell: &BoardCell) -> (u32, u32) {
+        let mut row = board_cell.row as u32 - '1' as u32;
+        let mut col = board_cell.col as u32 - 'a' as u32;
+
+        match &self.orientation {
+            BoardOrientation::LightSide => {
+                row = Self::CELLS_IN_ROW as u32 - row - 1;
+            }
+            BoardOrientation::DarkSide => {
+                col = Self::CELLS_IN_ROW as u32 - col - 1;
+            }
+        }
+
+        (row, col)
+    }
+
     fn label_position(
         &self,
         index: usize,
@@ -139,7 +179,7 @@ impl VisualSettings {
 
         let correct_index = match label_direction {
             LabelDirection::StartToEnd => index,
-            LabelDirection::EndToStart => TOTAL_CELLS_IN_DIRECTION - index - 1,
+            LabelDirection::EndToStart => Self::CELLS_IN_ROW as usize - index - 1,
         };
 
         let board_size = self.board_size();
@@ -214,6 +254,7 @@ fn create_board(
         window_size: window.physical_size(),
         min_board_size: 600,
         max_board_size: 1200,
+        orientation: BoardOrientation::LightSide,
     };
 
     chess_board.labels = create_labels(&mut commands, &visual_settings);
@@ -280,7 +321,7 @@ fn create_cells(
     for row in 0..8 {
         for col in 0..8 {
             let is_light = (-1i32).pow(row + col).is_positive();
-            let board_cell = BoardCell { row, col };
+            let board_cell = visual_settings.cell_name(row, col);
             let cell_position = visual_settings.cell_position(row, col);
 
             let entity = commands.spawn((
