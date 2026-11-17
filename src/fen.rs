@@ -14,8 +14,7 @@
 use std::num::NonZeroUsize;
 
 use crate::chess_core::{
-    board::BoardCell,
-    pieces::{ChessPiece, ChessPieceColor},
+    board::BoardCell, pieces::{ChessPiece, ChessPieceColor, ChessPieceName},
 };
 use bevy::{platform::collections::HashMap, prelude::*};
 
@@ -38,8 +37,8 @@ struct Headers {
 
 #[derive(Default, Clone)]
 struct AvailableCastles {
-    dark: Castles,
-    light: Castles,
+    black: Castles,
+    white: Castles,
 }
 
 #[derive(Default, Clone)]
@@ -179,10 +178,10 @@ fn parse_headers(headers: &str) -> Result<Headers, FenParseError> {
         match name.trim() {
             "orientation" => match value.trim() {
                 "b" => {
-                    headers.orientation = ChessPieceColor::Dark;
+                    headers.orientation = ChessPieceColor::Black;
                 }
                 "w" => {
-                    headers.orientation = ChessPieceColor::Light;
+                    headers.orientation = ChessPieceColor::White;
                 }
                 _ => {
                     return Err(FenParseError {
@@ -294,9 +293,9 @@ fn parse_pieces(board_information: &str) -> Result<HashMap<BoardCell, ChessPiece
             }
 
             if piece_name.chars().all(char::is_lowercase) {
-                color = ChessPieceColor::Dark;
+                color = ChessPieceColor::Black;
             } else if piece_name.chars().all(char::is_uppercase) {
-                color = ChessPieceColor::Light;
+                color = ChessPieceColor::White;
             } else {
                 return Err(FenParseError {
                     kind: FenParseErrorKind::InvalidField {
@@ -310,7 +309,7 @@ fn parse_pieces(board_information: &str) -> Result<HashMap<BoardCell, ChessPiece
             pieces.insert(
                 ((b'8' - row as u8) as char, (b'a' + col as u8) as char).into(),
                 ChessPiece {
-                    name: piece_name.to_uppercase(),
+                    name: ChessPieceName(piece_name.to_uppercase()),
                     color,
                 },
             );
@@ -346,8 +345,8 @@ fn parse_pieces(board_information: &str) -> Result<HashMap<BoardCell, ChessPiece
 
 fn parse_active_color(active_color: &str) -> Result<ChessPieceColor, FenParseError> {
     match active_color {
-        "w" => Ok(ChessPieceColor::Light),
-        "b" => Ok(ChessPieceColor::Dark),
+        "w" => Ok(ChessPieceColor::White),
+        "b" => Ok(ChessPieceColor::Black),
         _ => Err(FenParseError {
             kind: FenParseErrorKind::InvalidField {
                 actual: active_color.to_string(),
@@ -364,10 +363,10 @@ fn parse_available_castles(castling_availability: &str) -> Result<AvailableCastl
     if castling_availability != "-" {
         for piece_name in castling_availability.chars() {
             match piece_name {
-                'K' => available_castles.light.king_side = true,
-                'k' => available_castles.dark.king_side = true,
-                'Q' => available_castles.light.queen_side = true,
-                'q' => available_castles.dark.queen_side = true,
+                'K' => available_castles.white.king_side = true,
+                'k' => available_castles.black.king_side = true,
+                'Q' => available_castles.white.queen_side = true,
+                'q' => available_castles.black.queen_side = true,
                 _ => {
                     return Err(FenParseError {
                         kind: FenParseErrorKind::InvalidField {
@@ -479,17 +478,17 @@ mod tests {
 
         assert_eq!(pieces.len(), 3);
 
-        let light_pawn = piece_at(&pieces, '8', 'a');
-        assert_eq!(light_pawn.name, "P");
-        assert!(matches!(&light_pawn.color, ChessPieceColor::Light));
+        let white_pawn = piece_at(&pieces, '8', 'a');
+        assert_eq!(white_pawn.name, ChessPieceName("P".to_owned()));
+        assert!(matches!(&white_pawn.color, ChessPieceColor::White));
 
-        let dark_pawn = piece_at(&pieces, '8', 'b');
-        assert_eq!(dark_pawn.name, "P");
-        assert!(matches!(&dark_pawn.color, ChessPieceColor::Dark));
+        let black_pawn = piece_at(&pieces, '8', 'b');
+        assert_eq!(black_pawn.name, ChessPieceName("P".to_owned()));
+        assert!(matches!(&black_pawn.color, ChessPieceColor::Black));
 
-        let light_knight = piece_at(&pieces, '8', 'e');
-        assert_eq!(light_knight.name, "N");
-        assert!(matches!(&light_knight.color, ChessPieceColor::Light));
+        let white_knight = piece_at(&pieces, '8', 'e');
+        assert_eq!(white_knight.name, ChessPieceName("N".to_owned()));
+        assert!(matches!(&white_knight.color, ChessPieceColor::White));
     }
 
     #[test]
@@ -500,20 +499,20 @@ mod tests {
 
         let knook = piece_at(&pieces, '8', 'a');
 
-        assert_eq!(knook.name, "NK");
-        assert!(matches!(&knook.color, ChessPieceColor::Light));
+        assert_eq!(knook.name, ChessPieceName("NK".to_owned()));
+        assert!(matches!(&knook.color, ChessPieceColor::White));
     }
 
     #[test]
-    fn parse_custom_dark_pieces() {
+    fn parse_custom_black_pieces() {
         let pieces = parse_first_rank("(nk)7").unwrap();
 
         assert_eq!(pieces.len(), 1);
 
         let knook = piece_at(&pieces, '8', 'a');
 
-        assert_eq!(knook.name, "NK");
-        assert!(matches!(&knook.color, ChessPieceColor::Dark));
+        assert_eq!(knook.name, ChessPieceName("NK".to_owned()));
+        assert!(matches!(&knook.color, ChessPieceColor::Black));
     }
 
     #[test]
@@ -578,11 +577,11 @@ mod tests {
         assert_eq!(pieces.len(), 2);
 
         let pawn = piece_at(&pieces, '5', 'd');
-        assert_eq!(pawn.name, "P");
-        assert!(matches!(&pawn.color, ChessPieceColor::Light));
+        assert_eq!(pawn.name, ChessPieceName("P".to_owned()));
+        assert!(matches!(&pawn.color, ChessPieceColor::White));
 
         let king = piece_at(&pieces, '1', 'h');
-        assert_eq!(king.name, "K");
-        assert!(matches!(&king.color, ChessPieceColor::Dark));
+        assert_eq!(king.name, ChessPieceName("K".to_owned()));
+        assert!(matches!(&king.color, ChessPieceColor::Black));
     }
 }

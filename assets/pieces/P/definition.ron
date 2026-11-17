@@ -1,0 +1,8 @@
+ChessPieceDefinition(
+  short_name: "P",
+  full_name: "Pawn",
+  images: ChessPieceImages(
+    white: "white_pawn.svg",
+    black: "black_pawn.svg"
+  )
+)

@@ -1,0 +1,8 @@
+ChessPieceDefinition(
+  short_name: "B",
+  full_name: "Bishop",
+  images: ChessPieceImages(
+    white: "white_bishop.svg",
+    black: "black_bishop.svg"
+  )
+)
