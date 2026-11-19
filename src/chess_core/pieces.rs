@@ -156,6 +156,15 @@ pub struct ChessPieceImageAssets {
     pub black: Handle<SvgAsset>,
 }
 
+impl ChessPieceImageAssets {
+    pub fn resolve_color(&self, chess_piece_color: &ChessPieceColor) -> &Handle<SvgAsset> {
+        match chess_piece_color {
+            ChessPieceColor::White => &self.white,
+            ChessPieceColor::Black => &self.black,
+        }
+    }
+}
+
 /// Loads a chess piece information from a given path.
 ///
 /// The requirements:

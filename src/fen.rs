@@ -11,40 +11,63 @@
 //! Also if there are custom rules of game, they can be expected at specific
 //! after end of the standard FEN.
 
-use std::num::NonZeroUsize;
+use std::num::NonZeroU32;
 
 use crate::chess_core::{
-    board::BoardCell, pieces::{ChessPiece, ChessPieceColor, ChessPieceName},
+    board::{BoardCell, BoardOrientation},
+    pieces::{ChessPiece, ChessPieceColor, ChessPieceName},
 };
 use bevy::{platform::collections::HashMap, prelude::*};
 
 #[derive(derive_builder::Builder)]
-pub struct GameInformation {
+pub struct InitialGameInformation {
     #[builder(default)]
     pub headers: Headers,
     pub pieces: HashMap<BoardCell, ChessPiece>,
     pub active_color: ChessPieceColor,
     pub available_castles: AvailableCastles,
-    pub en_passant_target_square: Option<BoardCell>,
-    pub halfmove_clock: usize,
-    pub fullmove_number: NonZeroUsize,
+    pub en_passant_info: Option<EnPassantInfo>,
+    pub halfmove_clock: u32,
+    pub fullmove_number: NonZeroU32,
 }
 
 #[derive(Default, Clone)]
-struct Headers {
-    orientation: ChessPieceColor,
+pub struct Headers {
+    pub orientation: BoardOrientation,
 }
 
 #[derive(Default, Clone)]
-struct AvailableCastles {
-    black: Castles,
-    white: Castles,
+pub struct AvailableCastles {
+    pub black: Castles,
+    pub white: Castles,
 }
 
 #[derive(Default, Clone)]
-struct Castles {
-    king_side: bool,
-    queen_side: bool,
+pub struct Castles {
+    pub king_side: bool,
+    pub queen_side: bool,
+}
+
+/// The extended information about en passant.
+///
+/// The classic FEN provides enough information for the classic chess game, because it can be based
+/// on rank (row). For instance, if en passant target square happens at the 'e6' row, then it's for
+/// white side with capture piece at the 'e5' row.
+///
+/// But it's not sufficient for a non-classic chess game, where en passant target square might be
+/// at different row. Imagine that both central pieces can advance by 3 squares instead of 2, then
+/// en passant target square places at different place (e.g. 'e5' instead of 'e6') with capture piece
+/// at 'e4'.
+#[derive(Clone)]
+pub struct EnPassantInfo {
+    /// The side for which the en passant is available.
+    pub for_side: ChessPieceColor,
+
+    /// The target square of the en passant.
+    pub target_square: BoardCell,
+
+    /// The position of piece that need to be captured after the en passant.
+    pub capture_piece: BoardCell,
 }
 
 #[derive(Debug)]
@@ -91,8 +114,8 @@ macro_rules! expect {
     };
 }
 
-pub fn parse(fen: &str) -> Result<GameInformation, FenParseError> {
-    let mut game_information = GameInformationBuilder::create_empty();
+pub fn parse(fen: &str) -> Result<InitialGameInformation, FenParseError> {
+    let mut game_information = InitialGameInformationBuilder::create_empty();
 
     for line in fen.split('\n').map(|line| line.trim()) {
         if line.is_empty() {
@@ -128,12 +151,11 @@ pub fn parse(fen: &str) -> Result<GameInformation, FenParseError> {
         game_information.available_castles(parse_available_castles(castling_availability)?);
 
         expect! {
-            en_passant_target_square <== encoded_game_information,
-            name: "The en passant target square.".to_string(),
-            message: "The en passant target squase is absent from an input.".to_string()
+            en_passant_info <== encoded_game_information,
+            name: "The en passant information.".to_string(),
+            message: "The en passant information is absent from an input.".to_string()
         };
-        game_information
-            .en_passant_target_square(parse_en_passant_target_square(en_passant_target_square)?);
+        game_information.en_passant_info(parse_en_passant_info(en_passant_info)?);
 
         expect! {
             halfmove_clock <== encoded_game_information,
@@ -177,12 +199,8 @@ fn parse_headers(headers: &str) -> Result<Headers, FenParseError> {
 
         match name.trim() {
             "orientation" => match value.trim() {
-                "b" => {
-                    headers.orientation = ChessPieceColor::Black;
-                }
-                "w" => {
-                    headers.orientation = ChessPieceColor::White;
-                }
+                "b" => headers.orientation = BoardOrientation::BlackSide,
+                "w" => headers.orientation = BoardOrientation::WhiteSide,
                 _ => {
                     return Err(FenParseError {
                         kind: FenParseErrorKind::InvalidField {
@@ -190,7 +208,7 @@ fn parse_headers(headers: &str) -> Result<Headers, FenParseError> {
                             expected_format: "Either w or black".to_owned(),
                         },
                         message: "Received invalid value of orientation".to_string(),
-                    })
+                    });
                 }
             },
             _ => {
@@ -199,7 +217,7 @@ fn parse_headers(headers: &str) -> Result<Headers, FenParseError> {
                         header_name: name.trim().to_string(),
                     },
                     message: "A header is unknown, possibly it's malformed.".to_string(),
-                })
+                });
             }
         }
     }
@@ -385,50 +403,101 @@ fn parse_available_castles(castling_availability: &str) -> Result<AvailableCastl
     Ok(available_castles)
 }
 
-fn parse_en_passant_target_square(
-    en_passant_target_square: &str,
-) -> Result<Option<BoardCell>, FenParseError> {
-    let mut target_square = None;
+fn parse_en_passant_info(en_passant_info: &str) -> Result<Option<EnPassantInfo>, FenParseError> {
+    let mut info = None;
 
-    if en_passant_target_square != "-" {
-        if !en_passant_target_square.is_ascii() || en_passant_target_square.len() != 2 {
+    if en_passant_info != "-" {
+        if !en_passant_info.is_ascii() || en_passant_info.len() != 7 {
             return Err(FenParseError {
                     kind: FenParseErrorKind::InvalidField {
-                        actual: en_passant_target_square.to_string(),
+                        actual: en_passant_info.to_string(),
                         expected_format:
-                            "It should contain two symbols, denoting a square in the chess board (i.e. \"e3\")"
-                                .to_string(),
+                            "{for_side}/{target_square}/{capture_piece} where for_side is either \"b\" or \"w\";\
+                            target_square denotes a square in algebaric notation (e.g. e3);\
+                            capture_piece denotes a square in algebraic notation where the capture piece is placed.".to_string(),
                     },
                     message: "The en passant target square value contains a malformed information."
                         .to_string(),
                 });
         }
 
-        let mut position = en_passant_target_square.chars();
-        let col = position.next().unwrap();
-        let row = position.next().unwrap();
+        let mut en_passant_info = en_passant_info.split('/');
 
-        if !('a'..='h').contains(&col) || !('1'..='8').contains(&row) {
-            return Err(FenParseError {
+        expect! {
+            for_side <== en_passant_info,
+            name: "The side for en passant.".to_string(),
+            message: "The side for en passant that tells for which side the en passant is available is absent from input.".to_string()
+        };
+
+        let for_side = match for_side {
+            "w" => ChessPieceColor::White,
+            "b" => ChessPieceColor::Black,
+            _ => return Err(FenParseError {
                     kind: FenParseErrorKind::InvalidField {
-                        actual: en_passant_target_square.to_string(),
-                        expected_format:
-                            "It should contain two symbols, denoting a square in the chess board (i.e. \"e3\")"
-                                .to_string(),
+                        actual: for_side.to_string(),
+                        expected_format: "In {for_side}/{target_square}/{capture_piece} the \"for_side\" is either \"b\" or \"w\".".to_string(),
                     },
-                    message: "The en passant target square value contains either an invalid row or an invalid column name."
+                    message: "Unknown \"for_side\"."
                         .to_string(),
-                });
-        }
+                })
+        };
 
-        target_square = Some((row, col).into());
+        expect! {
+            target_square <== en_passant_info,
+            name: "The en passant target square.".to_string(),
+            message: "The en passant target square is absent from input.".to_string()
+        };
+
+        expect! {
+            capture_piece <== en_passant_info,
+            name: "The en passant capture piece position.".to_string(),
+            message: "The en passant capture piece position is absent from input.".to_string()
+        };
+
+        let get_position = |input: &str| {
+            if input.len() != 2 {
+                return Err(FenParseError {
+                    kind: FenParseErrorKind::InvalidField {
+                        actual: input.to_string(),
+                        expected_format: "The square in algebraic notation for (e.g. \"e4\")"
+                            .to_string(),
+                    },
+                    message: "The square in algebraic notation is malformed.".to_string(),
+                });
+            }
+
+            let mut position = input.chars();
+            let col = position.next().unwrap();
+            let row = position.next().unwrap();
+
+            if !('a'..='h').contains(&col) || !('1'..='8').contains(&row) {
+                return Err(FenParseError {
+                        kind: FenParseErrorKind::InvalidField {
+                            actual: input.to_string(),
+                            expected_format:
+                                "It should contain two symbols, denoting a square in the chess board (e.g. \"e3\")"
+                                    .to_string(),
+                        },
+                        message: "The en passant target square value contains either an invalid row or an invalid column name."
+                            .to_string(),
+                    });
+            }
+
+            Ok((row, col))
+        };
+
+        info = Some(EnPassantInfo {
+            for_side,
+            target_square: get_position(target_square)?.into(),
+            capture_piece: get_position(capture_piece)?.into(),
+        });
     }
 
-    Ok(target_square)
+    Ok(info)
 }
 
-fn parse_halfmove_clock(halfmove_clock: &str) -> Result<usize, FenParseError> {
-    halfmove_clock.parse::<usize>().map_err(|_| FenParseError {
+fn parse_halfmove_clock(halfmove_clock: &str) -> Result<u32, FenParseError> {
+    halfmove_clock.parse::<u32>().map_err(|_| FenParseError {
         kind: FenParseErrorKind::InvalidField {
             actual: halfmove_clock.to_string(),
             expected_format: "A non-negative integer.".to_string(),
@@ -437,9 +506,9 @@ fn parse_halfmove_clock(halfmove_clock: &str) -> Result<usize, FenParseError> {
     })
 }
 
-fn parse_fullmove_nubmer(fullmove_number: &str) -> Result<NonZeroUsize, FenParseError> {
+fn parse_fullmove_nubmer(fullmove_number: &str) -> Result<NonZeroU32, FenParseError> {
     fullmove_number
-        .parse::<NonZeroUsize>()
+        .parse::<NonZeroU32>()
         .map_err(|_| FenParseError {
             kind: FenParseErrorKind::InvalidField {
                 actual: fullmove_number.to_string(),

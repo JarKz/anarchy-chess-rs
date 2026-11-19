@@ -1,6 +1,6 @@
 use bevy::{platform::collections::HashMap, prelude::*, sprite::Anchor, window::WindowResized};
 
-use crate::chess_core::ChessBoard;
+use crate::chess_core::VisualChessBoard;
 
 /// The pluign of the chess board.
 ///
@@ -42,10 +42,9 @@ fn resize_board(
     let cell_size = board_visual_information.cell_size();
 
     for (cell, mut transform) in board_query {
-        let cell_index = board_visual_information.cell_index(cell);
         transform.scale = Vec3::splat(cell_size);
 
-        let cell_position = board_visual_information.cell_position(cell_index.0, cell_index.1);
+        let cell_position = board_visual_information.cell_position(cell);
         transform.translation.x = cell_position.0;
         transform.translation.y = cell_position.1;
     }
@@ -101,8 +100,8 @@ struct BoardSquare;
 /// from different orientations.
 #[derive(Component, Hash, PartialEq, Eq, Clone)]
 pub struct BoardCell {
-    row: char,
-    col: char,
+    pub row: char,
+    pub col: char,
 }
 
 impl From<(char, char)> for BoardCell {
@@ -111,6 +110,12 @@ impl From<(char, char)> for BoardCell {
             row: value.0,
             col: value.1,
         }
+    }
+}
+
+impl ToString for BoardCell {
+    fn to_string(&self) -> String {
+        format!("{}{}", self.col, self.row)
     }
 }
 
@@ -131,7 +136,7 @@ pub struct BoardVisualInformation {
     min_board_size: u32,
     max_board_size: u32,
 
-    orientation: BoardOrientation,
+    pub orientation: BoardOrientation,
 }
 
 impl Default for BoardVisualInformation {
@@ -146,7 +151,9 @@ impl Default for BoardVisualInformation {
 }
 
 /// The board orientation defines on which side the board shows: on the white or on the black side.
+#[derive(Default, Clone)]
 pub enum BoardOrientation {
+    #[default]
     WhiteSide,
     BlackSide,
 }
@@ -173,33 +180,6 @@ impl BoardVisualInformation {
     /// Returns a size of the board square.
     pub fn cell_size(&self) -> f32 {
         self.cell_board_size() / Self::CELLS_IN_ROW
-    }
-
-    /// Retrieves a position (in coordinates) of a given square, using its indices.
-    ///
-    /// Helpful information:
-    ///
-    ///  - Indices are 0-based.
-    ///  - The row start from top of the board regardless to the orientation.
-    ///  - The column stats form left of the board regardless to the orientation.
-    ///
-    ///  ## Return
-    ///
-    ///  In result returns an actual coordinate of a cell in XY, and it's a center of
-    ///  a square.
-    pub fn cell_position(&self, row: u32, col: u32) -> (f32, f32) {
-        let board_size = self.board_size();
-        let cell_size = self.cell_size();
-
-        let top_left_position = (
-            -board_size / 2.0 + Self::LABEL_PADDING + cell_size / 2.0,
-            board_size / 2.0 - cell_size / 2.0,
-        );
-
-        (
-            top_left_position.0 + cell_size * col as f32,
-            top_left_position.1 - cell_size * row as f32,
-        )
     }
 
     /// Retrieves a cell name a given square, using its indices.
@@ -301,6 +281,33 @@ impl BoardVisualInformation {
     }
 }
 
+pub trait CellPosition<T> {
+    fn cell_position(&self, key: T) -> (f32, f32);
+}
+
+impl CellPosition<(u32, u32)> for BoardVisualInformation {
+    fn cell_position(&self, (row, col): (u32, u32)) -> (f32, f32) {
+        let board_size = self.board_size();
+        let cell_size = self.cell_size();
+
+        let top_left_position = (
+            -board_size / 2.0 + Self::LABEL_PADDING + cell_size / 2.0,
+            board_size / 2.0 - cell_size / 2.0,
+        );
+
+        (
+            top_left_position.0 + cell_size * col as f32,
+            top_left_position.1 - cell_size * row as f32,
+        )
+    }
+}
+
+impl CellPosition<&BoardCell> for BoardVisualInformation {
+    fn cell_position(&self, cell: &BoardCell) -> (f32, f32) {
+        self.cell_position(self.cell_index(cell))
+    }
+}
+
 /// The label category defines to which side it belongs: to rows or to columns.
 ///
 /// It helps to determine where to put a label only based on indices instead of
@@ -390,7 +397,7 @@ impl CellMaterials {
 fn create_board(
     mut commands: Commands,
     window: Single<&Window>,
-    mut chess_board: ResMut<ChessBoard>,
+    mut chess_board: ResMut<VisualChessBoard>,
     mut board_visual_information: ResMut<BoardVisualInformation>,
 ) {
     let board_materials = BoardMaterials::new();
@@ -462,7 +469,7 @@ fn create_cells(
         for col in 0..8 {
             let is_white = (-1i32).pow(row + col).is_positive();
             let board_cell = board_visual_information.cell_name(row, col);
-            let cell_position = board_visual_information.cell_position(row, col);
+            let cell_position = board_visual_information.cell_position((row, col));
 
             let entity = commands.spawn((
                 BoardSquare,
