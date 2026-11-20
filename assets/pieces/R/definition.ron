@@ -1,6 +1,9 @@
 ChessPieceDefinition(
   short_name: "R",
   full_name: "Rook",
+
+  movement_rules: [],
+
   images: ChessPieceImages(
     white: "white_rook.svg",
     black: "black_rook.svg"

@@ -1,6 +1,72 @@
 ChessPieceDefinition(
   short_name: "P",
   full_name: "Pawn",
+
+  movement_rules: [
+    MovementRule(
+      conditions: [
+        Equal(SelfColor, Color(White))
+      ],
+      generators: [
+        Vector(
+          direction: (0, -1),
+          max_distance: Times(1),
+        )
+      ],
+      actions: [
+        MoveSelf,
+      ]
+    ),
+    MovementRule(
+      conditions: [
+        Equal(SelfColor, Color(Black))
+      ],
+      generators: [
+        Vector(
+          direction: (0, 1),
+          max_distance: Times(1),
+        )
+      ],
+      actions: [
+        MoveSelf,
+      ]
+    ),
+    MovementRule(
+      conditions: [
+        Equal(SelfColor, Color(White)),
+        Equal(OriginRow, Row('2'))
+      ],
+      generators: [
+        Vector(
+          direction: (0, -2),
+          max_distance: Times(1),
+        )
+      ],
+      actions: [
+        MoveSelf,
+        AddState(name: Black("en_passant_target_square"), value: Square(OffsetFromOrigin((0, -1)))),
+        AddState(name: Black("en_passant_capture_piece"), value: Square(Target)),
+      ]
+    ),
+    MovementRule(
+      conditions: [
+        Equal(SelfColor, Color(Black)),
+        Equal(OriginRow, Row('7'))
+      ],
+      generators: [
+        Vector(
+          direction: (0, 2),
+          max_distance: Times(1),
+        )
+      ],
+      actions: [
+        MoveSelf,
+        AddState(name: White("en_passant_target_square"), value: Square(OffsetFromOrigin((0, 1)))),
+        AddState(name: White("en_passant_capture_piece"), value: Square(Target)),
+      ]
+    ),
+  ],
+
   images: ChessPieceImages(
     white: "white_pawn.svg",
     black: "black_pawn.svg"

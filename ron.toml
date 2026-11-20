@@ -1,0 +1,3 @@
+[[types]]
+glob = "assets/pieces/**/definition.ron"
+type = "crate::chess_core::pieces::ChessPieceDefinition"

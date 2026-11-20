@@ -5,6 +5,7 @@ use bevy_resvg::{
     effects::components::{SvgSize, Unit},
     raster::component::Svg,
 };
+use serde::Deserialize;
 
 use crate::{
     chess_core::{
@@ -236,8 +237,9 @@ impl ChessGameStates {
 /// strings. They're flexible regardless to less control of correctness.
 ///
 /// To avoid mutability on any level, uses [`Box<str>`].
-#[derive(PartialEq, Eq, Hash, Clone)]
-struct StateName(Box<str>);
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Deserialize)]
+#[serde(from = "String")]
+pub struct StateName(Box<str>);
 
 impl From<&str> for StateName {
     fn from(value: &str) -> Self {
@@ -279,8 +281,9 @@ impl StateName {
 /// strings. They're flexible regardless to less control of correctness.
 ///
 /// To avoid mutability on any level, uses [`Box<str>`].
-#[derive(PartialEq, Eq, Clone)]
-struct StateValue(Box<str>);
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
+#[serde(from = "String")]
+pub struct StateValue(Box<str>);
 
 impl From<&str> for StateValue {
     fn from(value: &str) -> Self {
@@ -297,8 +300,8 @@ impl From<String> for StateValue {
 /// Describes the state of a chess game.
 ///
 /// Different states can change behavior of the game.
-#[derive(PartialEq, Eq, Hash, Clone)]
-enum Side<T> {
+#[derive(PartialEq, Eq, Hash, Clone, Debug, Deserialize)]
+pub enum Side<T> {
     /// The state belongs to the white side.
     White(T),
 

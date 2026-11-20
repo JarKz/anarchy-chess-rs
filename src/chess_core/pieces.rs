@@ -1,7 +1,13 @@
+use std::num::NonZeroU32;
+
 use bevy::{asset::AssetLoader, platform::collections::HashMap, prelude::*};
 use bevy_resvg::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::chess_core::{
+    Side, StateName, board::{BoardCell, Column, Row},
+};
 
 /// The plugin of a chess pieces.
 ///
@@ -99,7 +105,7 @@ pub struct ChessPiece {
 }
 
 /// The color of chess piece, defining the side.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub enum ChessPieceColor {
     Black,
     #[default]
@@ -124,16 +130,238 @@ pub struct ChessPieceAsset {
 /// kind of information.
 ///
 /// It deserialized from `pieces/{short_piece_name}/definition.ron`
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub struct ChessPieceDefinition {
-    /// Short name of the chess piece, usually an unique name.
+    /// The short name of the chess piece, usually an unique name.
     pub short_name: String,
 
-    /// Full name of the chess piece to display to a user.
+    /// The full name of the chess piece to display to a user.
     pub full_name: String,
 
-    /// Images of a chess piece, used to display on screen.
+    /// The list of movement rules of the chess pieces.
+    pub movement_rules: Vec<MovementRule>,
+
+    /// The images of a chess piece, used to display on screen.
     images: ChessPieceImages,
+}
+
+/// The definition of moves for the chess piece.
+///
+/// Instead of thinking about "just moving" better to think
+/// about it as "generate candidate squares to which the move
+/// can be performed". Only in this case the move rules are
+/// absurdly simple.
+///
+/// In result there are should be available candidate squares
+/// that'll be used in next stage of finding legal, attacking
+/// and other kind of squares.
+#[derive(Debug, Deserialize)]
+pub struct MovementRule {
+    /// The conditions of the candidate square to which the move
+    /// might be performed.
+    conditions: Vec<MoveCondition>,
+
+    /// The list of move square generators.
+    generators: Vec<MoveGenerator>,
+
+    /// The list of actions that must be performed.
+    actions: Vec<Action>,
+}
+
+/// The definition of a move condition.
+///
+/// Some of moves can be performed only after if their conditions are met.
+/// Otherwise the move will be discarded and won't be used at current moment.
+#[derive(Debug, Deserialize)]
+pub enum MoveCondition {
+    /// Verifies whether the value is true.
+    ///
+    /// There are different ways to verify the value:
+    ///
+    ///  - If the value is the state, then it verifies the existence
+    ///    of the state and checks is the value equal `true`.
+    ///  - If the value is arbitrary, the verification is based purely
+    ///    on logic, and the result might be not expeted. If you're not
+    ///    sure, then use [`MoveCondition::Equal`] variant which have
+    ///    more predictable result.
+    IsTrue(Value),
+
+    /// Verifies is the both provided values are equal.
+    ///
+    /// To verify the values, all of them converts into a string and
+    /// checks is both of strings are equal or not.
+    ///
+    /// To avoid ambiguity, these strings may have their tag. For instance,
+    /// the [`Value::Row`] will have tag "row" before the value (i.e. "row:e").
+    Equal(Value, Value),
+}
+
+/// The move generator generates candidate squares.
+#[derive(Debug, Deserialize)]
+pub enum MoveGenerator {
+    Vector {
+        /// The vector that defines a destination from a current square.
+        direction: Vector,
+
+        /// The distance tells how long the vector can be.
+        ///
+        /// It's basically vector multiplication: $direction \cdot distance$
+        max_distance: MoveDistance,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+enum MoveDistance {
+    /// The finite amount of a distance.
+    Times(NonZeroU32),
+
+    /// The infinite amount of a distance.
+    Infinite,
+}
+
+/// The value is the generic type that collect all available types
+/// for checking and using value. Without it the declarative way
+/// of moving pieces cannot be implemented.
+///
+/// There's a big complexity to perform specific operations. For instance,
+/// a try to verify [`MoveCondition::IsTrue`] might not be success for any
+/// value type. Therefore the verification is under explicit control and
+/// can be performed for available types, even if all types are combined
+/// in [Value] enumeration, though.
+#[derive(Debug, Deserialize)]
+pub enum Value {
+    /// The state itself is the value.
+    ///
+    /// It also means that it can be verified either by its name or its value,
+    /// depending on the context.
+    State(Side<StateName>),
+
+    /// The secific defined row itself is the value.
+    ///
+    /// **NOTE:** Cannot be stored in a state.
+    Row(Row),
+
+    /// The secific defined column itself is the value.
+    ///
+    /// **NOTE:** Cannot be stored in a state.
+    Column(Column),
+
+    /// The secific defined square itself is the value.
+    ///
+    /// **NOTE:** Can be stored in a state.
+    Square(Square),
+
+    /// The row on which the piece is placed before any move itself is the value.
+    ///
+    /// **NOTE:** Cannot be stored in a state.
+    OriginRow,
+
+    /// The row on which the piece is placed after any move itself is the value.
+    ///
+    /// **NOTE:** Cannot be stored in a state.
+    TargetRow,
+
+    /// The column on which the piece is placed before any move itself is the value.
+    ///
+    /// **NOTE:** Cannot be stored in a state.
+    OriginColumn,
+
+    /// The column on which the piece is placed after any move itself is the value.
+    ///
+    /// **NOTE:** Cannot be stored in a state.
+    TargetColumn,
+
+    /// The piece self color itself is the value.
+    ///
+    /// Usually this variant uses for verifying the current color of the chess piece.
+    SelfColor,
+
+    /// The piece color itself is the value.
+    ///
+    /// It helps to determine on which side the piece.
+    Color(ChessPieceColor),
+}
+
+/// The information about square.
+///
+/// It can be converted into [BoardCell] to store in a state.
+#[derive(Debug, Deserialize)]
+pub enum Square {
+    /// Uses the square where a piece is placed before any move.
+    Origin,
+    /// Uses the square where a piece is placed after any move.
+    Target,
+    /// Uses an explicitly defined square.
+    Explicit(BoardCell),
+    /// Uses the square that is placed somewhere from origin by [`Vector`].
+    OffsetFromOrigin(Vector),
+}
+
+/// The list of actions that have to be performed.
+///
+/// These actions must be effective for [crate::chess_core::ChessGameEngine].
+/// In other words, if some action actually have a effect for the chess game
+/// engine, then it should be registered in the move history. Otherwise it
+/// must be skipped. For instance, the king piece on each move can omit action
+/// that removes "kingside_castling" state, but the chess game engine registers
+/// only when the mentioned state exists, otherwise it'll be skipped.
+#[derive(Debug, Deserialize)]
+pub enum Action {
+    /// Move the piece itself to a selected destination square.
+    MoveSelf,
+
+    /// Move a piece form one square to another.
+    ///
+    /// It also affects any other pieces.
+    Move { from: BoardCell, to: BoardCell },
+
+    /// Remove the state.
+    RemoveState(Side<StateName>),
+
+    /// Add a state.
+    AddState { name: Side<StateName>, value: Value },
+}
+
+/// The 2D vector.
+///
+/// To visualize it, better see the diagram below:
+/// |       (0, -1)
+/// |          ^
+/// |(-1, 0) < O > (1, 0)
+/// |          v
+/// |       (0, 1)
+///
+/// The board squares count from the top-left corner, and
+/// the vector represents in (X, Y) offset form a current square.
+///
+/// If:
+/// - The X coordinate is positive, it moves right in X count.
+/// - The X coordinate is negative, it moves left in X count.
+/// - The Y coordinate is positive, it moves below in Y count.
+/// - The Y coordinate is negative, it moves above in Y count.
+///
+/// Also it means that a move can pass through any other pieces,
+/// i.e. "jumps over them", like the knight.
+#[derive(Debug, Deserialize)]
+#[serde(from = "[i32; 2]")]
+pub struct Vector([i32; 2]);
+
+impl Vector {
+    /// The X_1 (X) component of the 2D vector.
+    fn x(&self) -> i32 {
+        self.0[0]
+    }
+
+    /// The X_2 (Y) component of the 2D vector.
+    fn y(&self) -> i32 {
+        self.0[1]
+    }
+}
+
+impl From<[i32; 2]> for Vector {
+    fn from(value: [i32; 2]) -> Self {
+        Self(value)
+    }
 }
 
 /// The chess piece image paths as strings.

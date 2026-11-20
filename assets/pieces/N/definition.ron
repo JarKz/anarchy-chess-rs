@@ -1,6 +1,9 @@
 ChessPieceDefinition(
   short_name: "N",
   full_name: "Knight",
+
+  movement_rules: [],
+
   images: ChessPieceImages(
     white: "white_knight.svg",
     black: "black_knight.svg"
