@@ -126,14 +126,28 @@ pub struct ChessPieceAsset {
 /// It deserialized from `pieces/{short_piece_name}/definition.ron`
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ChessPieceDefinition {
-    /// Short name of the chess piece, usually an unique name.
+    /// The short name of the chess piece, usually an unique name.
     pub short_name: String,
 
-    /// Full name of the chess piece to display to a user.
+    /// The full name of the chess piece to display to a user.
     pub full_name: String,
 
-    /// Images of a chess piece, used to display on screen.
+    /// The list of movement rules of the chess pieces.
+    pub movement_rules: Vec<MovementRule>,
+
+    /// The images of a chess piece, used to display on screen.
     images: ChessPieceImages,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MovementRule {
+    condition: Vec<MoveCondition>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub enum MoveCondition {
+    Exist,
+    Equal
 }
 
 /// The chess piece image paths as strings.
