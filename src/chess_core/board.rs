@@ -1,4 +1,6 @@
 use bevy::{platform::collections::HashMap, prelude::*, sprite::Anchor, window::WindowResized};
+use derive_more::Display;
+use serde::Deserialize;
 
 use crate::chess_core::VisualChessBoard;
 
@@ -98,7 +100,9 @@ struct BoardSquare;
 /// Instead of indexing, which can can be ambiguous, uses a concrete position
 /// containing a row number and a column symbol. This pair cannot be misused
 /// from different orientations.
-#[derive(Component, Hash, PartialEq, Eq, Clone)]
+#[derive(Component, Hash, PartialEq, Eq, Clone, Debug, Deserialize, Display)]
+#[serde(try_from = "String")]
+#[display("{col}{row}")]
 pub struct BoardCell {
     pub row: char,
     pub col: char,
@@ -113,9 +117,76 @@ impl From<(char, char)> for BoardCell {
     }
 }
 
-impl ToString for BoardCell {
-    fn to_string(&self) -> String {
-        format!("{}{}", self.col, self.row)
+#[derive(Debug, Display, thiserror::Error)]
+pub enum BoardCellParseError {
+    #[display("\"{input}\" is not the board cell.")]
+    NotBoardCell { input: String },
+    InvalidColumn(#[from] InvalidColumn),
+    InvalidRow(#[from] InvalidRow)
+}
+
+impl TryFrom<String> for BoardCell {
+    type Error = BoardCellParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if !value.is_ascii() || value.len() != 2 {
+            return Err(BoardCellParseError::NotBoardCell { input: value });
+        }
+
+        let mut chars = value.chars();
+        let col = Column::try_from(chars
+            .next()
+            .expect("The first letter is a board cell column."))?;
+        let row = Row::try_from(chars.next().expect("The second letter is a board cell row."))?;
+
+        Ok(BoardCell { row: row.0, col: col.0 })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "char")]
+pub struct Row(char);
+
+#[derive(Debug, Display)]
+#[display("Expected a row within range from 'a' to 'h' (in lower case!), but got '{row}.")]
+pub struct InvalidRow {
+    row: char,
+}
+
+impl std::error::Error for InvalidRow {}
+
+impl TryFrom<char> for Row {
+    type Error = InvalidRow;
+    fn try_from(row: char) -> std::prelude::v1::Result<Self, Self::Error> {
+        if ('1'..='8').contains(&row) {
+            Ok(Self(row))
+        } else {
+            Err(InvalidRow { row })
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "char")]
+pub struct Column(char);
+
+#[derive(Debug, Display)]
+#[display("Expected a column within range from 'a' to 'h' (in lower case!), but got '{column}.")]
+pub struct InvalidColumn {
+    column: char,
+}
+
+impl std::error::Error for InvalidColumn {}
+
+impl TryFrom<char> for Column {
+    type Error = InvalidColumn;
+
+    fn try_from(column: char) -> std::prelude::v1::Result<Self, Self::Error> {
+        if ('a'..='h').contains(&column) {
+            Ok(Self(column))
+        } else {
+            Err(InvalidColumn { column })
+        }
     }
 }
 

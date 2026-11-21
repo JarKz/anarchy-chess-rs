@@ -156,6 +156,7 @@ dependencies = [
  "bevy",
  "bevy_resvg",
  "derive_builder",
+ "derive_more",
  "ron",
  "serde",
  "thiserror 2.0.21",
