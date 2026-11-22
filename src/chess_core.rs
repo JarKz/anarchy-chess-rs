@@ -14,7 +14,7 @@ use crate::{
         },
         pieces::{
             ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage, ChessPiecesPlugin,
-            PiecesResourceState,
+            ConditionCheckContext, PiecesResourceState,
         },
     },
     fen::{self, InitialGameInformation},
@@ -68,7 +68,7 @@ fn setup_board(
     for (cell, piece) in &initial_game_information.pieces {
         let translation = board_visual_information.cell_position(cell);
         let chess_piece_asset = piece_storage
-            .load_piece_asset(piece.name.clone(), &chess_piece_assets)
+            .load_piece_asset(&piece.name, &chess_piece_assets)
             .unwrap();
 
         visual_chess_board.pieces.insert(
@@ -127,7 +127,7 @@ fn resize_pieces<'a>(
 /// The chess game engine that provides functionality of managing chess pieces, moves, rules, states
 /// and other important things. This structure is responsible to ensure the correctness of the game.
 #[derive(Resource, Clone)]
-struct ChessGameEngine {
+pub struct ChessGameEngine {
     /// The active states at current moment of the game.
     states: ChessGameStates,
 
@@ -145,6 +145,48 @@ struct ChessGameEngine {
     // moves: Vec<MoveInfo>,
     /// The current chess board.
     board: ChessBoard,
+}
+
+impl ChessGameEngine {
+    pub fn generate_legal_moves(
+        &self,
+        cell: BoardCell,
+        piece_storage: &ChessPieceStorage,
+        chess_piece_assets: &Assets<ChessPieceAsset>,
+    ) {
+        let Square::Occupied(piece) = &self.board[&cell] else {
+            return;
+        };
+
+        let Some(asset) = piece_storage.load_piece_asset(&piece.name, chess_piece_assets) else {
+            warn!("The asset of chess piece is absent!");
+            return;
+        };
+
+        for movement_rule in &asset.definition.movement_rules {
+            for generator in &movement_rule.generators {
+                for square in generator.start_from(cell.clone()) {
+                    let all_conditions_met = movement_rule.conditions.iter().all(|condition| {
+                        condition.is_met(
+                            ConditionCheckContext {
+                                origin_cell: &cell,
+                                target_cell: &square,
+                                piece,
+                            },
+                            self,
+                        )
+                    });
+
+                    // INFO: First fail, stop further generation.
+                    if !all_conditions_met {
+                        break;
+                    }
+
+                    // TODO: check obstruction and behavior on it
+                }
+            }
+        }
+    }
 }
 
 impl Default for ChessGameEngine {
@@ -220,6 +262,13 @@ struct ChessGameStates {
 }
 
 impl ChessGameStates {
+    pub fn get<SN>(&self, key: Side<SN>) -> Option<&StateValue>
+    where
+        SN: Into<StateName>,
+    {
+        self.states.get(&key.map(<SN as Into<StateName>>::into))
+    }
+
     /// Insterts a new state with provided key and value.
     ///
     /// If there's an old value with the same key, it'll be returned.
@@ -286,6 +335,12 @@ impl StateName {
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
 #[serde(from = "String")]
 pub struct StateValue(Box<str>);
+
+impl StateValue {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 impl From<&str> for StateValue {
     fn from(value: &str) -> Self {

@@ -187,6 +187,27 @@ impl AsIndex for Row {
     }
 }
 
+impl std::ops::Add<i32> for Row {
+    type Output = Option<Self>;
+
+    fn add(self, rhs: i32) -> Self::Output {
+        // INFO: because row in chess represents from 1 to 8, but
+        // in current chess board model indices starts form the top-left
+        // corner, which is 8-th row.
+        //
+        // To move down need to add, and to move above need to substract.
+        // Therefore there's need to invert the operation.
+        #[allow(clippy::suspicious_arithmetic_impl)]
+        let result = self.0 as i32 - rhs;
+
+        if (Row::R1.0 as i32..=Row::R8.0 as i32).contains(&result) {
+            Some(Row(result as u8 as char))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Display)]
 #[display("Expected a row within range from 'a' to 'h' (in lower case!), but got '{row}.")]
 pub struct InvalidRow {
@@ -214,12 +235,12 @@ pub struct Column(char);
 impl Column {
     pub const A: Column = Column('a');
     pub const B: Column = Column('b');
-    pub const C: Column = Column('C');
-    pub const D: Column = Column('D');
-    pub const E: Column = Column('E');
-    pub const G: Column = Column('G');
-    pub const F: Column = Column('F');
-    pub const H: Column = Column('H');
+    pub const C: Column = Column('c');
+    pub const D: Column = Column('d');
+    pub const E: Column = Column('e');
+    pub const G: Column = Column('g');
+    pub const F: Column = Column('f');
+    pub const H: Column = Column('h');
 }
 
 impl LabelSymbol for Column {
@@ -231,6 +252,20 @@ impl LabelSymbol for Column {
 impl AsIndex for Column {
     fn as_index(&self) -> usize {
         (self.0 as u8 - b'a') as usize
+    }
+}
+
+impl std::ops::Add<i32> for Column {
+    type Output = Option<Self>;
+
+    fn add(self, rhs: i32) -> Self::Output {
+        let result = self.0 as i32 + rhs;
+
+        if (Self::A.0 as i32..=Self::H.0 as i32).contains(&result) {
+            Some(Column(result as u8 as char))
+        } else {
+            None
+        }
     }
 }
 
@@ -627,4 +662,59 @@ fn create_cells(
     }
 
     cells
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::chess_core::pieces::Vector;
+
+    #[test]
+    fn row_arithmetic() {
+        let vector = Vector::from([0, 1]);
+        let mut origin = BoardCell {
+            row: Row::R5,
+            col: Column::A,
+        };
+
+        origin.row = (origin.row + vector.y()).unwrap();
+
+        assert_eq!(origin.row, Row::R4);
+
+        origin = BoardCell {
+            row: Row::R7,
+            col: Column::H,
+        };
+
+        let vector = Vector::from([0, -1]);
+        origin.row = (origin.row + vector.y()).unwrap();
+        assert_eq!(origin.row, Row::R8);
+
+        assert!((origin.row + vector.y()).is_none());
+    }
+
+    #[test]
+    fn col_arithmetic() {
+        let vector = Vector::from([1, 0]);
+        let mut origin = BoardCell {
+            row: Row::R5,
+            col: Column::A,
+        };
+
+        origin.col = (origin.col + vector.x()).unwrap();
+
+        assert_eq!(origin.col, Column::B);
+
+        origin = BoardCell {
+            row: Row::R7,
+            col: Column::H,
+        };
+
+        assert!((origin.col.clone() + vector.x()).is_none());
+
+        let vector = Vector::from([-1, 0]);
+        origin.col = (origin.col + vector.x()).unwrap();
+
+        assert_eq!(origin.col, Column::G);
+    }
 }

@@ -2,11 +2,13 @@ use std::num::NonZeroU32;
 
 use bevy::{asset::AssetLoader, platform::collections::HashMap, prelude::*};
 use bevy_resvg::prelude::*;
+use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::chess_core::{
-    Side, StateName, board::{BoardCell, Column, Row},
+    ChessGameEngine, Side, StateName,
+    board::{BoardCell, Column, Row},
 };
 
 /// The plugin of a chess pieces.
@@ -84,11 +86,11 @@ impl ChessPieceStorage {
 
     pub fn load_piece_asset<'a>(
         &self,
-        piece_name: ChessPieceName,
+        piece_name: &ChessPieceName,
         assets: &'a Assets<ChessPieceAsset>,
     ) -> Option<&'a ChessPieceAsset> {
         self.vocabulary
-            .get(&piece_name)
+            .get(piece_name)
             .and_then(move |handle| assets.get(handle))
     }
 }
@@ -105,10 +107,13 @@ pub struct ChessPiece {
 }
 
 /// The color of chess piece, defining the side.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Display)]
 pub enum ChessPieceColor {
+    #[display("black")]
     Black,
+
     #[default]
+    #[display("white")]
     White,
 }
 
@@ -159,13 +164,13 @@ pub struct ChessPieceDefinition {
 pub struct MovementRule {
     /// The conditions of the candidate square to which the move
     /// might be performed.
-    conditions: Vec<MoveCondition>,
+    pub conditions: Vec<MoveCondition>,
 
     /// The list of move square generators.
-    generators: Vec<MoveGenerator>,
+    pub generators: Vec<MoveGenerator>,
 
     /// The list of actions that must be performed.
-    actions: Vec<Action>,
+    pub actions: Vec<Action>,
 }
 
 /// The definition of a move condition.
@@ -194,6 +199,51 @@ pub enum MoveCondition {
     /// To avoid ambiguity, these strings may have their tag. For instance,
     /// the [`Value::Row`] will have tag "row" before the value (i.e. "row:e").
     Equal(Value, Value),
+
+    /// Negates the inner condition.
+    Not(Box<MoveCondition>),
+}
+
+impl MoveCondition {
+    pub fn is_met(
+        &self,
+        condition_check_context: ConditionCheckContext,
+        chess_game_engine: &ChessGameEngine,
+    ) -> bool {
+        match self {
+            MoveCondition::IsTrue(value) => match value {
+                Value::State(state_key) => chess_game_engine
+                    .states
+                    .get(state_key.clone())
+                    .is_some_and(|value| value.as_str() == "true"),
+
+                // INFO: not supported.
+                Value::Row(_)
+                | Value::Column(_)
+                | Value::Square(_)
+                | Value::OriginRow
+                | Value::TargetRow
+                | Value::OriginColumn
+                | Value::TargetColumn
+                | Value::SelfColor
+                | Value::Color(_) => false,
+            },
+            MoveCondition::Equal(lhs, rhs) => {
+                lhs.encode_to_string(condition_check_context.clone(), chess_game_engine)
+                    == rhs.encode_to_string(condition_check_context, chess_game_engine)
+            }
+            MoveCondition::Not(move_condition) => {
+                !move_condition.is_met(condition_check_context, chess_game_engine)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ConditionCheckContext<'a> {
+    pub origin_cell: &'a BoardCell,
+    pub target_cell: &'a BoardCell,
+    pub piece: &'a ChessPiece,
 }
 
 /// The move generator generates candidate squares.
@@ -210,13 +260,60 @@ pub enum MoveGenerator {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 enum MoveDistance {
     /// The finite amount of a distance.
     Times(NonZeroU32),
 
     /// The infinite amount of a distance.
     Infinite,
+}
+
+impl MoveGenerator {
+    pub fn start_from(&self, origin: BoardCell) -> impl Iterator<Item = BoardCell> {
+        match self {
+            MoveGenerator::Vector {
+                direction,
+                max_distance,
+            } => VectorGenerator {
+                origin,
+                distance: 1,
+                direction: *direction,
+                max_distance: max_distance.clone(),
+            },
+        }
+    }
+}
+
+pub struct VectorGenerator {
+    origin: BoardCell,
+    direction: Vector,
+    distance: u32,
+    max_distance: MoveDistance,
+}
+
+impl Iterator for VectorGenerator {
+    type Item = BoardCell;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &self.max_distance {
+            MoveDistance::Times(count) => {
+                if self.distance > count.get() {
+                    return None;
+                }
+            }
+            MoveDistance::Infinite => (),
+        }
+
+        let vector = self.direction * self.distance;
+        let mut destination = self.origin.clone();
+        destination.row = (destination.row + vector.y())?;
+        destination.col = (destination.col + vector.x())?;
+
+        self.distance += 1;
+
+        Some(destination)
+    }
 }
 
 /// The value is the generic type that collect all available types
@@ -282,6 +379,33 @@ pub enum Value {
     Color(ChessPieceColor),
 }
 
+impl Value {
+    fn encode_to_string(
+        &self,
+        condition_check_context: ConditionCheckContext,
+        chess_game_engine: &ChessGameEngine,
+    ) -> String {
+        match self {
+            Value::State(state_key) => chess_game_engine
+                .states
+                .get(state_key.clone())
+                .map(|state_value| state_value.as_str().to_owned())
+                .unwrap_or_default(),
+            Value::Row(row) => format!("row:{row}"),
+            Value::OriginRow => format!("row:{}", condition_check_context.origin_cell.row),
+            Value::TargetRow => format!("row:{}", condition_check_context.target_cell.row),
+            Value::Column(column) => format!("column:{column}"),
+            Value::OriginColumn => format!("column:{}", condition_check_context.origin_cell.col),
+            Value::TargetColumn => format!("column:{}", condition_check_context.target_cell.col),
+            Value::Square(square) => {
+                square.encode_to_string(condition_check_context, chess_game_engine)
+            }
+            Value::SelfColor => format!("color:{}", condition_check_context.piece.color),
+            Value::Color(chess_piece_color) => format!("color:{chess_piece_color}"),
+        }
+    }
+}
+
 /// The information about square.
 ///
 /// It can be converted into [BoardCell] to store in a state.
@@ -295,6 +419,36 @@ pub enum Square {
     Explicit(BoardCell),
     /// Uses the square that is placed somewhere from origin by [`Vector`].
     OffsetFromOrigin(Vector),
+}
+
+impl Square {
+    fn encode_to_string(
+        &self,
+        condition_check_context: ConditionCheckContext,
+        _chess_game_engine: &ChessGameEngine,
+    ) -> String {
+        match self {
+            Square::Origin => format!("suqare:{}", condition_check_context.origin_cell),
+            Square::Target => format!("square:{}", condition_check_context.target_cell),
+            Square::Explicit(board_cell) => format!("square:{board_cell}"),
+            Square::OffsetFromOrigin(vector) => {
+                let mut destination_square = condition_check_context.origin_cell.clone();
+
+                let Some(row) = destination_square.row + vector.y() else {
+                    return String::default();
+                };
+
+                let Some(col) = destination_square.col + vector.x() else {
+                    return String::default();
+                };
+
+                destination_square.row = row;
+                destination_square.col = col;
+
+                format!("square:{destination_square}")
+            }
+        }
+    }
 }
 
 /// The list of actions that have to be performed.
@@ -342,18 +496,18 @@ pub enum Action {
 ///
 /// Also it means that a move can pass through any other pieces,
 /// i.e. "jumps over them", like the knight.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(from = "[i32; 2]")]
 pub struct Vector([i32; 2]);
 
 impl Vector {
     /// The X_1 (X) component of the 2D vector.
-    fn x(&self) -> i32 {
+    pub fn x(&self) -> i32 {
         self.0[0]
     }
 
     /// The X_2 (Y) component of the 2D vector.
-    fn y(&self) -> i32 {
+    pub fn y(&self) -> i32 {
         self.0[1]
     }
 }
@@ -361,6 +515,16 @@ impl Vector {
 impl From<[i32; 2]> for Vector {
     fn from(value: [i32; 2]) -> Self {
         Self(value)
+    }
+}
+
+impl std::ops::Mul<u32> for Vector {
+    type Output = Self;
+
+    fn mul(mut self, rhs: u32) -> Self::Output {
+        self.0[0] = self.0[0].saturating_mul(rhs as i32);
+        self.0[1] = self.0[1].saturating_mul(rhs as i32);
+        self
     }
 }
 
