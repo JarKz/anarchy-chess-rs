@@ -58,25 +58,8 @@ fn reposition_labels(
     label_query: Query<(&Label, &mut Transform)>,
 ) {
     for (label, mut transform) in label_query {
-        let label_position = match label.symbol {
-            'a'..='h' => {
-                let index = label.symbol as u32 - 'a' as u32;
-                board_visual_information.label_position(
-                    index as usize,
-                    LabelCategory::ColDefinition,
-                    &board_visual_information.orientation,
-                )
-            }
-            '1'..='8' => {
-                let index = label.symbol as u32 - '1' as u32;
-                board_visual_information.label_position(
-                    index as usize,
-                    LabelCategory::RowDefinition,
-                    &board_visual_information.orientation,
-                )
-            }
-            _ => unreachable!(),
-        };
+        let label_position =
+            board_visual_information.label_position(label, &board_visual_information.orientation);
 
         transform.translation.x = label_position.0;
         transform.translation.y = label_position.1;
@@ -85,8 +68,27 @@ fn reposition_labels(
 
 /// The label of the chess board, denoting the row number or column symbol.
 #[derive(Component, Hash, PartialEq, Eq, Clone)]
-pub struct Label {
-    symbol: char,
+pub enum Label {
+    Row(Row),
+    Column(Column),
+}
+
+impl Label {
+    fn as_symbol(&self) -> char {
+        match self {
+            Label::Row(row) => row.label_symbol(),
+            Label::Column(col) => col.label_symbol(),
+        }
+    }
+}
+
+impl AsIndex for Label {
+    fn as_index(&self) -> usize {
+        match self {
+            Label::Row(row) => row.as_index(),
+            Label::Column(col) => col.as_index(),
+        }
+    }
 }
 
 /// The component that marks a board square as actual square.
@@ -173,6 +175,8 @@ impl Row {
     pub const R6: Row = Row('6');
     pub const R7: Row = Row('7');
     pub const R8: Row = Row('8');
+
+    pub const DEFAULT_RANGE: std::ops::RangeInclusive<char> = Self::R1.0..=Self::R8.0;
 }
 
 impl LabelSymbol for Row {
@@ -238,9 +242,11 @@ impl Column {
     pub const C: Column = Column('c');
     pub const D: Column = Column('d');
     pub const E: Column = Column('e');
-    pub const G: Column = Column('g');
     pub const F: Column = Column('f');
+    pub const G: Column = Column('g');
     pub const H: Column = Column('h');
+
+    pub const DEFAULT_RANGE: std::ops::RangeInclusive<char> = Self::A.0..=Self::H.0;
 }
 
 impl LabelSymbol for Column {
@@ -419,32 +425,26 @@ impl BoardVisualInformation {
     ///  ## Return
     ///
     ///  In result returns a pair (x, y).
-    fn label_position(
-        &self,
-        index: usize,
-        label_category: LabelCategory,
-        orientation: &BoardOrientation,
-    ) -> (f32, f32) {
-        let label_direction = LabelDirection::new_from(&label_category, orientation);
+    fn label_position(&self, label: &Label, orientation: &BoardOrientation) -> (f32, f32) {
+        let mut index = label.as_index();
 
-        let correct_index = match label_direction {
-            LabelDirection::StartToEnd => index,
-            LabelDirection::EndToStart => Self::CELLS_IN_ROW as usize - index - 1,
-        };
+        if matches!(orientation, BoardOrientation::BlackSide) {
+            index = Self::CELLS_IN_ROW as usize - index - 1;
+        }
 
         let board_size = self.board_size();
         let cell_size = self.cell_size();
 
-        match label_category {
-            LabelCategory::RowDefinition => (
+        match label {
+            Label::Row(_) => (
                 -board_size / 2.0 + Self::LABEL_PADDING / 2.0,
-                board_size / 2.0 - cell_size / 2.0 - cell_size * correct_index as f32,
+                board_size / 2.0 - cell_size / 2.0 - cell_size * index as f32,
             ),
-            LabelCategory::ColDefinition => (
+            Label::Column(_) => (
                 -board_size / 2.0
                     + Self::LABEL_PADDING
                     + cell_size / 2.0
-                    + cell_size * correct_index as f32,
+                    + cell_size * index as f32,
                 -board_size / 2.0 + Self::LABEL_PADDING / 2.0,
             ),
         }
@@ -475,54 +475,6 @@ impl CellPosition<(u32, u32)> for BoardVisualInformation {
 impl CellPosition<&BoardCell> for BoardVisualInformation {
     fn cell_position(&self, cell: &BoardCell) -> (f32, f32) {
         self.cell_position(self.cell_index(cell))
-    }
-}
-
-/// The label category defines to which side it belongs: to rows or to columns.
-///
-/// It helps to determine where to put a label only based on indices instead of
-/// symbols.
-enum LabelCategory {
-    RowDefinition,
-    ColDefinition,
-}
-
-/// The label direction defines from where to start.
-enum LabelDirection {
-    /// Definitions:
-    ///  - for rows it means start from '1' at top and end with '8' at bottom.
-    ///  - for columns it means start from 'a' at left and end with 'h' at right.
-    StartToEnd,
-
-    /// Definitions:
-    ///  - for rows it means start from '8' at top and end with '1' at bottom.
-    ///  - for columns it means start from 'h' at left and end with 'a' at right.
-    EndToStart,
-}
-
-impl LabelDirection {
-    /// Creates a correct label direction based on a category and the board orientation.
-    ///
-    /// The provided information is sufficient to determine a correct label direction.
-    fn new_from(category: &LabelCategory, orientation: &BoardOrientation) -> Self {
-        let mut label_direction = match category {
-            LabelCategory::RowDefinition => LabelDirection::EndToStart,
-            LabelCategory::ColDefinition => LabelDirection::StartToEnd,
-        };
-
-        if let BoardOrientation::BlackSide = orientation {
-            label_direction.inverse();
-        }
-
-        label_direction
-    }
-
-    /// Inverses the direction.
-    fn inverse(&mut self) {
-        match self {
-            LabelDirection::StartToEnd => *self = LabelDirection::EndToStart,
-            LabelDirection::EndToStart => *self = LabelDirection::StartToEnd,
-        }
     }
 }
 
@@ -586,41 +538,25 @@ fn create_labels(
 ) -> HashMap<Label, Entity> {
     let mut labels = HashMap::new();
 
-    let mut append_label = |symbol: char, position: (f32, f32)| {
-        let label = Label { symbol };
+    for label in Row::DEFAULT_RANGE
+        .map(|symbol| Label::Row(Row(symbol)))
+        .chain(Column::DEFAULT_RANGE.map(|symbol| Label::Column(Column(symbol))))
+    {
+        let label_position =
+            board_visual_information.label_position(&label, &board_visual_information.orientation);
 
         let label_entity = commands.spawn((
             label.clone(),
-            Text2d(symbol.to_string()),
+            Text2d(label.as_symbol().to_string()),
             TextFont {
                 font_size: FontSize::Px(20.0),
                 ..Default::default()
             },
             Anchor::CENTER,
-            Transform::from_xyz(position.0, position.1, 0.0),
+            Transform::from_xyz(label_position.0, label_position.1, 0.0),
         ));
 
         labels.insert(label, label_entity.id());
-    };
-
-    for (index, symbol) in ('1'..='8').enumerate() {
-        let label_position = board_visual_information.label_position(
-            index,
-            LabelCategory::RowDefinition,
-            &board_visual_information.orientation,
-        );
-
-        append_label(symbol, label_position);
-    }
-
-    for (index, symbol) in ('a'..='h').enumerate() {
-        let label_position = board_visual_information.label_position(
-            index,
-            LabelCategory::ColDefinition,
-            &board_visual_information.orientation,
-        );
-
-        append_label(symbol, label_position);
     }
 
     labels
