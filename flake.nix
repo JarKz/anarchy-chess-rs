@@ -1,5 +1,5 @@
 {
-  description = "Noti Application";
+  description = "Anarchy Chess Game";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -115,9 +115,7 @@
             mkDevShell = (
               rustToolchain:
               pkgs.mkShell {
-                packages = with pkgs; [
-                  llvmPackages_21.libllvm
-                ];
+                packages = [ ];
 
                 buildInputsWith = buildInputsWith [ rustToolchain ];
                 nativeBuildInputs = nativeBuildInputsWith [ rustToolchain ];
