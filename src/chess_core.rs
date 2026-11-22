@@ -9,7 +9,9 @@ use serde::Deserialize;
 
 use crate::{
     chess_core::{
-        board::{BoardCell, BoardVisualInformation, CellPosition, ChessBoardPlugin, Label},
+        board::{
+            AsIndex, BoardCell, BoardVisualInformation, CellPosition, ChessBoardPlugin, Label,
+        },
         pieces::{
             ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage, ChessPiecesPlugin,
             PiecesResourceState,
@@ -357,11 +359,7 @@ impl ChessBoard {
 
     /// Retrieves an actual index of board square by a conventional [BoardCell].
     fn get_index_by(board_cell: &BoardCell) -> usize {
-        debug_assert!(('1'..='8').contains(&board_cell.row));
-        debug_assert!(('a'..='h').contains(&board_cell.col));
-
-        Self::CELLS_IN_ROW * (b'8' - board_cell.row as u8) as usize
-            + (board_cell.col as u8 - b'a') as usize
+        Self::CELLS_IN_ROW * board_cell.row.as_index() + board_cell.col.as_index()
     }
 }
 

@@ -104,25 +104,24 @@ struct BoardSquare;
 #[serde(try_from = "String")]
 #[display("{col}{row}")]
 pub struct BoardCell {
-    pub row: char,
-    pub col: char,
+    pub col: Column,
+    pub row: Row,
 }
 
-impl From<(char, char)> for BoardCell {
-    fn from(value: (char, char)) -> Self {
-        Self {
-            row: value.0,
-            col: value.1,
-        }
+impl From<(Column, Row)> for BoardCell {
+    fn from((col, row): (Column, Row)) -> Self {
+        Self { col, row }
     }
 }
 
 #[derive(Debug, Display, thiserror::Error)]
 pub enum BoardCellParseError {
     #[display("\"{input}\" is not the board cell.")]
-    NotBoardCell { input: String },
+    NotBoardCell {
+        input: String,
+    },
     InvalidColumn(#[from] InvalidColumn),
-    InvalidRow(#[from] InvalidRow)
+    InvalidRow(#[from] InvalidRow),
 }
 
 impl TryFrom<String> for BoardCell {
@@ -134,18 +133,59 @@ impl TryFrom<String> for BoardCell {
         }
 
         let mut chars = value.chars();
-        let col = Column::try_from(chars
-            .next()
-            .expect("The first letter is a board cell column."))?;
-        let row = Row::try_from(chars.next().expect("The second letter is a board cell row."))?;
+        let col = Column::try_from(
+            chars
+                .next()
+                .expect("The first letter is a board cell column."),
+        )?;
+        let row = Row::try_from(
+            chars
+                .next()
+                .expect("The second letter is a board cell row."),
+        )?;
 
-        Ok(BoardCell { row: row.0, col: col.0 })
+        Ok(BoardCell { row, col })
     }
 }
 
-#[derive(Debug, Deserialize)]
+pub trait LabelSymbol {
+    fn label_symbol(&self) -> char;
+}
+
+pub trait AsIndex {
+    /// Retrieves the index of provided label.
+    ///
+    /// The index starts from top-left corner of board (i.e. "a8").
+    fn as_index(&self) -> usize;
+}
+
+#[derive(Hash, PartialEq, Eq, Clone, Debug, Deserialize, Display)]
 #[serde(try_from = "char")]
 pub struct Row(char);
+
+#[allow(unused)]
+impl Row {
+    pub const R1: Row = Row('1');
+    pub const R2: Row = Row('2');
+    pub const R3: Row = Row('3');
+    pub const R4: Row = Row('4');
+    pub const R5: Row = Row('5');
+    pub const R6: Row = Row('6');
+    pub const R7: Row = Row('7');
+    pub const R8: Row = Row('8');
+}
+
+impl LabelSymbol for Row {
+    fn label_symbol(&self) -> char {
+        self.0
+    }
+}
+
+impl AsIndex for Row {
+    fn as_index(&self) -> usize {
+        (b'8' - self.0 as u8) as usize
+    }
+}
 
 #[derive(Debug, Display)]
 #[display("Expected a row within range from 'a' to 'h' (in lower case!), but got '{row}.")]
@@ -166,9 +206,33 @@ impl TryFrom<char> for Row {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug, Deserialize, Display)]
 #[serde(try_from = "char")]
 pub struct Column(char);
+
+#[allow(unused)]
+impl Column {
+    pub const A: Column = Column('a');
+    pub const B: Column = Column('b');
+    pub const C: Column = Column('C');
+    pub const D: Column = Column('D');
+    pub const E: Column = Column('E');
+    pub const G: Column = Column('G');
+    pub const F: Column = Column('F');
+    pub const H: Column = Column('H');
+}
+
+impl LabelSymbol for Column {
+    fn label_symbol(&self) -> char {
+        self.0
+    }
+}
+
+impl AsIndex for Column {
+    fn as_index(&self) -> usize {
+        (self.0 as u8 - b'a') as usize
+    }
+}
 
 #[derive(Debug, Display)]
 #[display("Expected a column within range from 'a' to 'h' (in lower case!), but got '{column}.")]
@@ -276,8 +340,8 @@ impl BoardVisualInformation {
         }
 
         BoardCell {
-            row: (b'1' + row as u8) as char,
-            col: (b'a' + col as u8) as char,
+            col: Column((b'a' + col as u8) as char),
+            row: Row((b'1' + row as u8) as char),
         }
     }
 
@@ -294,8 +358,8 @@ impl BoardVisualInformation {
     ///
     ///  In result returns a pair (row, column).
     pub fn cell_index(&self, board_cell: &BoardCell) -> (u32, u32) {
-        let mut row = board_cell.row as u32 - '1' as u32;
-        let mut col = board_cell.col as u32 - 'a' as u32;
+        let mut row = board_cell.row.label_symbol() as u32 - '1' as u32;
+        let mut col = board_cell.col.label_symbol() as u32 - 'a' as u32;
 
         match &self.orientation {
             BoardOrientation::WhiteSide => {

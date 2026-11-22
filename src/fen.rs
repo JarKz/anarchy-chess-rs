@@ -14,7 +14,7 @@
 use std::num::NonZeroU32;
 
 use crate::chess_core::{
-    board::{BoardCell, BoardOrientation},
+    board::{BoardCell, BoardOrientation, Column, Row},
     pieces::{ChessPiece, ChessPieceColor, ChessPieceName},
 };
 use bevy::{platform::collections::HashMap, prelude::*};
@@ -324,8 +324,27 @@ fn parse_pieces(board_information: &str) -> Result<HashMap<BoardCell, ChessPiece
                 });
             }
 
+            let valid_row = Row::try_from((b'8' - row as u8) as char);
+            let valid_col = Column::try_from((b'a' + col as u8) as char);
+
+            let cell = match (valid_col, valid_row) {
+                (Ok(col), Ok(row)) => BoardCell::from((col, row)),
+                (Err(_), _) | (_, Err(_)) => {
+                    return Err(FenParseError {
+                            kind: FenParseErrorKind::InvalidField {
+                                actual: board_information.to_string(),
+                                expected_format:
+                                    "The board information should have correct size and piece count."
+                                        .to_string(),
+                            },
+                            message: "The board information is malformed: either there are more rows or more columns."
+                                .to_string(),
+                        });
+                }
+            };
+
             pieces.insert(
-                ((b'8' - row as u8) as char, (b'a' + col as u8) as char).into(),
+                cell,
                 ChessPiece {
                     name: ChessPieceName(piece_name.to_uppercase()),
                     color,
@@ -467,23 +486,24 @@ fn parse_en_passant_info(en_passant_info: &str) -> Result<Option<EnPassantInfo>,
             }
 
             let mut position = input.chars();
-            let col = position.next().unwrap();
-            let row = position.next().unwrap();
+            let col = Column::try_from(position.next().unwrap());
+            let row = Row::try_from(position.next().unwrap());
 
-            if !('a'..='h').contains(&col) || !('1'..='8').contains(&row) {
-                return Err(FenParseError {
-                        kind: FenParseErrorKind::InvalidField {
-                            actual: input.to_string(),
-                            expected_format:
-                                "It should contain two symbols, denoting a square in the chess board (e.g. \"e3\")"
-                                    .to_string(),
-                        },
-                        message: "The en passant target square value contains either an invalid row or an invalid column name."
-                            .to_string(),
-                    });
+            match (col, row) {
+                (Ok(col), Ok(row)) => Ok((col, row)),
+                (Err(_), _) | (_, Err(_)) => {
+                    Err(FenParseError {
+                            kind: FenParseErrorKind::InvalidField {
+                                actual: input.to_string(),
+                                expected_format:
+                                    "It should contain two symbols, denoting a square in the chess board (e.g. \"e3\")"
+                                        .to_string(),
+                            },
+                            message: "The en passant target square value contains either an invalid row or an invalid column name."
+                                .to_string(),
+                        })
+                }
             }
-
-            Ok((row, col))
         };
 
         info = Some(EnPassantInfo {
@@ -528,8 +548,8 @@ mod tests {
         parse_pieces(&board)
     }
 
-    fn piece_at(pieces: &HashMap<BoardCell, ChessPiece>, row: char, col: char) -> &ChessPiece {
-        let cell: BoardCell = (row, col).into();
+    fn piece_at(pieces: &HashMap<BoardCell, ChessPiece>, row: Row, col: Column) -> &ChessPiece {
+        let cell: BoardCell = (col, row).into();
 
         pieces.get(&cell).expect("Expected a piece at this cell")
     }
@@ -547,15 +567,15 @@ mod tests {
 
         assert_eq!(pieces.len(), 3);
 
-        let white_pawn = piece_at(&pieces, '8', 'a');
+        let white_pawn = piece_at(&pieces, Row::R8, Column::A);
         assert_eq!(white_pawn.name, ChessPieceName("P".to_owned()));
         assert!(matches!(&white_pawn.color, ChessPieceColor::White));
 
-        let black_pawn = piece_at(&pieces, '8', 'b');
+        let black_pawn = piece_at(&pieces, Row::R8, Column::B);
         assert_eq!(black_pawn.name, ChessPieceName("P".to_owned()));
         assert!(matches!(&black_pawn.color, ChessPieceColor::Black));
 
-        let white_knight = piece_at(&pieces, '8', 'e');
+        let white_knight = piece_at(&pieces, Row::R8, Column::E);
         assert_eq!(white_knight.name, ChessPieceName("N".to_owned()));
         assert!(matches!(&white_knight.color, ChessPieceColor::White));
     }
@@ -566,7 +586,7 @@ mod tests {
 
         assert_eq!(pieces.len(), 1);
 
-        let knook = piece_at(&pieces, '8', 'a');
+        let knook = piece_at(&pieces, Row::R8, Column::A);
 
         assert_eq!(knook.name, ChessPieceName("NK".to_owned()));
         assert!(matches!(&knook.color, ChessPieceColor::White));
@@ -578,7 +598,7 @@ mod tests {
 
         assert_eq!(pieces.len(), 1);
 
-        let knook = piece_at(&pieces, '8', 'a');
+        let knook = piece_at(&pieces, Row::R8, Column::A);
 
         assert_eq!(knook.name, ChessPieceName("NK".to_owned()));
         assert!(matches!(&knook.color, ChessPieceColor::Black));
@@ -645,11 +665,11 @@ mod tests {
 
         assert_eq!(pieces.len(), 2);
 
-        let pawn = piece_at(&pieces, '5', 'd');
+        let pawn = piece_at(&pieces, Row::R5, Column::D);
         assert_eq!(pawn.name, ChessPieceName("P".to_owned()));
         assert!(matches!(&pawn.color, ChessPieceColor::White));
 
-        let king = piece_at(&pieces, '1', 'h');
+        let king = piece_at(&pieces, Row::R1, Column::H);
         assert_eq!(king.name, ChessPieceName("K".to_owned()));
         assert!(matches!(&king.color, ChessPieceColor::Black));
     }
