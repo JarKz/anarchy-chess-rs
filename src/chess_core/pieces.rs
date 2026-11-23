@@ -117,6 +117,15 @@ pub enum ChessPieceColor {
     White,
 }
 
+impl ChessPieceColor {
+    pub fn is_ally(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Black, Self::Black) | (Self::White, Self::White)
+        )
+    }
+}
+
 /// A chess piece asset, containing all important information about it:
 ///
 ///  - the description of the chess piece;
@@ -169,8 +178,102 @@ pub struct MovementRule {
     /// The list of move square generators.
     pub generators: Vec<MoveGenerator>,
 
+    /// The definition on what should the piece behave when it met
+    /// an obstruction on a generation way.
+    pub on_obstruction: ObstructionBehavior,
+
+    /// The definition on what should the piece behave when it met
+    /// an opposite piece to capture.
+    pub on_capture: CaptureBehavior,
+
     /// The list of actions that must be performed.
     pub actions: Vec<Action>,
+}
+
+impl MovementRule {
+    /// Generates all [`CandidateSquare`]s from the origin cell and with the picked
+    /// chess piece.
+    ///
+    /// The movement rules are enforced, therefore the [`MovementRule`] should be
+    /// properly defined if you want to have predictable behavior.
+    ///
+    /// The current implementation is "first-fail", in other words a current generator
+    /// stops further generation and uses a next one.
+    pub fn generate_candidate_squares(
+        &self,
+        origin_cell: &BoardCell,
+        piece: &ChessPiece,
+        chess_game_engine: &ChessGameEngine,
+    ) -> Vec<CandidateSquare> {
+        let mut candidates = Vec::new();
+
+        for generator in &self.generators {
+            for square in generator.start_from(origin_cell.clone()) {
+                let all_conditions_met = self.conditions.iter().all(|condition| {
+                    condition.is_met(
+                        ConditionCheckContext {
+                            origin_cell,
+                            target_cell: &square,
+                            piece,
+                        },
+                        chess_game_engine,
+                    )
+                });
+
+                // INFO: First fail, stop further generation.
+                if !all_conditions_met {
+                    break;
+                }
+
+                let target_square = &chess_game_engine.board[&square];
+
+                let mut candidate_square = CandidateSquare {
+                    target_square: square,
+                    actions: self.actions.clone(),
+                    capture: None,
+                };
+
+                let on_obstruction_actions = match target_square {
+                    super::Square::Vacant => &self.on_obstruction.on_empty,
+                    super::Square::Occupied(other_piece) => {
+                        if piece.color.is_ally(&other_piece.color) {
+                            &self.on_obstruction.on_ally
+                        } else {
+                            &self.on_obstruction.on_enemy
+                        }
+                    }
+                };
+
+                let mut to_stop = false;
+                for on_obstruction_action in on_obstruction_actions {
+                    match on_obstruction_action {
+                        ObstructionAction::Capture => {
+                            candidate_square.capture = Some(self.on_capture.clone())
+                        }
+                        ObstructionAction::Discard => {
+                            break;
+                        }
+                        ObstructionAction::Stop => to_stop = true,
+                        ObstructionAction::Continue => (),
+                    }
+                }
+
+                candidates.push(candidate_square);
+
+                if to_stop {
+                    break;
+                }
+            }
+        }
+
+        candidates
+    }
+}
+
+pub struct CandidateSquare {
+    pub target_square: BoardCell,
+    pub actions: Vec<Action>,
+    pub capture: Option<CaptureBehavior>,
 }
 
 /// The definition of a move condition.
@@ -325,7 +428,7 @@ impl Iterator for VectorGenerator {
 /// value type. Therefore the verification is under explicit control and
 /// can be performed for available types, even if all types are combined
 /// in [Value] enumeration, though.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub enum Value {
     /// The state itself is the value.
     ///
@@ -409,7 +512,7 @@ impl Value {
 /// The information about square.
 ///
 /// It can be converted into [BoardCell] to store in a state.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub enum Square {
     /// Uses the square where a piece is placed before any move.
     Origin,
@@ -451,6 +554,70 @@ impl Square {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ObstructionBehavior {
+    #[serde(deserialize_with = "validate_actions")]
+    pub on_ally: Vec<ObstructionAction>,
+    #[serde(deserialize_with = "validate_actions")]
+    pub on_enemy: Vec<ObstructionAction>,
+    #[serde(deserialize_with = "validate_actions")]
+    pub on_empty: Vec<ObstructionAction>,
+}
+
+#[derive(Debug, Deserialize)]
+pub enum ObstructionAction {
+    Capture,
+    Discard,
+    Stop,
+    Continue,
+}
+
+fn validate_actions<'de, D>(deserializer: D) -> Result<Vec<ObstructionAction>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let actions = Vec::<ObstructionAction>::deserialize(deserializer)?;
+
+    if actions.is_empty() {
+        return Err(serde::de::Error::custom(
+            "The obstruction actions cannot be empty",
+        ));
+    }
+
+    let mut contains_controls = false;
+
+    for action in &actions {
+        match action {
+            ObstructionAction::Discard | ObstructionAction::Stop | ObstructionAction::Continue => {
+                if contains_controls {
+                    return Err(serde::de::Error::custom(
+                        "There's must be a single control obstruction action",
+                    ));
+                }
+
+                contains_controls = true;
+            }
+            _ => (),
+        }
+    }
+
+    if !matches!(
+        actions
+            .last()
+            .expect("There should be at least one obstruction action"),
+        ObstructionAction::Discard | ObstructionAction::Stop | ObstructionAction::Continue
+    ) {
+        return Err(serde::de::Error::custom(
+            "The control obstruction action should be placed at the end",
+        ));
+    }
+
+    Ok(actions)
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CaptureBehavior {}
+
 /// The list of actions that have to be performed.
 ///
 /// These actions must be effective for [crate::chess_core::ChessGameEngine].
@@ -459,7 +626,7 @@ impl Square {
 /// must be skipped. For instance, the king piece on each move can omit action
 /// that removes "kingside_castling" state, but the chess game engine registers
 /// only when the mentioned state exists, otherwise it'll be skipped.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub enum Action {
     /// Move the piece itself to a selected destination square.
     MoveSelf,

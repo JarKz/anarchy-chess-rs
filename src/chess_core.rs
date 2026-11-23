@@ -11,13 +11,10 @@ use crate::{
     chess_core::{
         board::{
             AsIndex, BoardCell, BoardVisualInformation, CellPosition, ChessBoardPlugin, Label,
+        }, pieces::{
+            CandidateSquare, ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage, ChessPiecesPlugin, ConditionCheckContext, PiecesResourceState,
         },
-        pieces::{
-            ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage, ChessPiecesPlugin,
-            ConditionCheckContext, PiecesResourceState,
-        },
-    },
-    fen::{self, InitialGameInformation},
+    }, fen::{self, InitialGameInformation},
 };
 
 pub mod board;
@@ -153,39 +150,28 @@ impl ChessGameEngine {
         cell: BoardCell,
         piece_storage: &ChessPieceStorage,
         chess_piece_assets: &Assets<ChessPieceAsset>,
-    ) {
+    ) -> Vec<CandidateSquare> {
         let Square::Occupied(piece) = &self.board[&cell] else {
-            return;
+            return vec![];
         };
 
         let Some(asset) = piece_storage.load_piece_asset(&piece.name, chess_piece_assets) else {
             warn!("The asset of chess piece is absent!");
-            return;
+            return vec![];
         };
 
+        let mut candidates = vec![];
+
         for movement_rule in &asset.definition.movement_rules {
-            for generator in &movement_rule.generators {
-                for square in generator.start_from(cell.clone()) {
-                    let all_conditions_met = movement_rule.conditions.iter().all(|condition| {
-                        condition.is_met(
-                            ConditionCheckContext {
-                                origin_cell: &cell,
-                                target_cell: &square,
-                                piece,
-                            },
-                            self,
-                        )
-                    });
-
-                    // INFO: First fail, stop further generation.
-                    if !all_conditions_met {
-                        break;
-                    }
-
-                    // TODO: check obstruction and behavior on it
-                }
-            }
+            candidates.extend(movement_rule.generate_candidate_squares(&cell, piece, self));
         }
+
+        // TODO: these candidates are not legal moves
+        // to filter from these candidates need to make a move
+        // and figure out whether the move is legal or not (by verifying
+        // some properties using the ChessGameEngine)
+
+        candidates
     }
 }
 
