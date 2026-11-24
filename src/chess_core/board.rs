@@ -2,7 +2,7 @@ use bevy::{platform::collections::HashMap, prelude::*, sprite::Anchor, window::W
 use derive_more::Display;
 use serde::Deserialize;
 
-use crate::chess_core::VisualChessBoard;
+use crate::chess_core::{BOARD_Z, VisualChessBoard};
 
 /// The pluign of the chess board.
 ///
@@ -572,7 +572,7 @@ fn create_labels(
                 ..Default::default()
             },
             Anchor::CENTER,
-            Transform::from_xyz(label_position.0, label_position.1, 0.0),
+            Transform::from_xyz(label_position.0, label_position.1, BOARD_Z),
         ));
 
         labels.insert(label, label_entity.id());
@@ -608,7 +608,7 @@ fn create_cells(
                     custom_size: Some((1.0, 1.0).into()),
                     ..default()
                 },
-                Transform::from_xyz(cell_position.0, cell_position.1, 0.0)
+                Transform::from_xyz(cell_position.0, cell_position.1, BOARD_Z)
                     .with_scale(Vec3::splat(cell_size)),
             ));
 
