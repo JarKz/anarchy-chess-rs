@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use bevy::{platform::collections::HashMap, prelude::*};
+use bevy::{ecs::system::SystemParam, platform::collections::HashMap, prelude::*};
 use bevy_resvg::{
     effects::components::{SvgSize, Unit},
     raster::component::Svg,
@@ -11,10 +11,13 @@ use crate::{
     chess_core::{
         board::{
             AsIndex, BoardCell, BoardVisualInformation, CellPosition, ChessBoardPlugin, Label,
-        }, pieces::{
-            CandidateSquare, ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage, ChessPiecesPlugin, ConditionCheckContext, PiecesResourceState,
         },
-    }, fen::{self, InitialGameInformation},
+        pieces::{
+            CandidateSquare, ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage,
+            ChessPiecesPlugin, PiecesResourceState,
+        },
+    },
+    fen::{self, InitialGameInformation},
 };
 
 pub mod board;
@@ -33,14 +36,22 @@ impl Plugin for ChessCorePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VisualChessBoard>()
             .init_resource::<ChessGameEngine>()
+            .init_resource::<BoardInteraction>()
+            .init_resource::<CellHover>()
             .add_plugins(ChessBoardPlugin)
             .add_plugins(ChessPiecesPlugin)
+            .add_systems(
+                Startup,
+                (initialize_materials, initialize_outline_marker).chain(),
+            )
             .add_systems(OnEnter(PiecesResourceState::Ready), setup_board)
             .add_systems(Update, initial_resize_pieces)
             .add_systems(
                 Update,
-                resize_pieces_on_board_resize.run_if(resource_changed::<BoardVisualInformation>),
-            );
+                (resize_pieces_on_board_resize, resize_outline_marker)
+                    .run_if(resource_changed::<BoardVisualInformation>),
+            )
+            .add_systems(PostUpdate, (handle_click, handle_hover));
     }
 }
 
@@ -57,7 +68,7 @@ fn setup_board(
     const DEFAULT_PIECE_SIZE: u32 = 256;
 
     let input = "header: orientation=w\n\
-                       rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+                       rnbqkbnr/pppppppp/8/8/3pp3/4P3/PPPP1PPP/RNBQKBNR w KQkq - 0 1";
     let initial_game_information = fen::parse(input).unwrap();
 
     board_visual_information.orientation = initial_game_information.headers.orientation.clone();
@@ -118,6 +129,240 @@ fn resize_pieces<'a>(
         transform.translation.y = cell_position.1;
 
         sprite.custom_size = Some(Vec2::splat(piece_size));
+    }
+}
+
+#[derive(SystemParam)]
+struct InputAndOutput<'w, 's> {
+    buttons: Res<'w, ButtonInput<MouseButton>>,
+    window: Single<'w, 's, &'static Window>,
+    camera: Single<'w, 's, (&'static Camera, &'static GlobalTransform)>,
+}
+
+#[derive(SystemParam)]
+struct BoardAndPieces<'w> {
+    board: Res<'w, BoardVisualInformation>,
+    piece_storage: Res<'w, ChessPieceStorage>,
+    chess_piece_assets: Res<'w, Assets<ChessPieceAsset>>,
+}
+
+#[derive(Resource)]
+struct InteractionMaterials {
+    action_circle: Handle<Mesh>,
+    action_color: Handle<ColorMaterial>,
+
+    outline_square: Handle<Mesh>,
+    outline_color: Handle<ColorMaterial>,
+}
+
+fn initialize_materials(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    commands.insert_resource(InteractionMaterials {
+        action_circle: meshes.add(Circle::new(1.0)),
+        action_color: materials.add(Color::srgba(0.5, 0.5, 0.5, 0.6)),
+
+        outline_square: meshes.add(Rectangle::new(1.0, 1.0).to_ring(0.04)),
+        outline_color: materials.add(Color::WHITE),
+    })
+}
+
+#[derive(Component)]
+struct CellOutlineMarker;
+
+#[derive(Resource, Default)]
+struct CellHover {
+    cell: Option<BoardCell>,
+}
+
+fn initialize_outline_marker(
+    mut commands: Commands,
+    interaction_materials: Res<InteractionMaterials>,
+) {
+    commands.spawn((
+        CellOutlineMarker,
+        Mesh2d(interaction_materials.outline_square.clone()),
+        MeshMaterial2d(interaction_materials.outline_color.clone()),
+        Transform::from_xyz(0.0, 0.0, 0.1),
+        Visibility::Hidden,
+    ));
+}
+
+fn resize_outline_marker(
+    board_visual_information: Res<BoardVisualInformation>,
+    cell_hover: Res<CellHover>,
+    mut outline_marker: Single<&mut Transform, With<CellOutlineMarker>>,
+) {
+    let Some(cell) = &cell_hover.cell else {
+        return;
+    };
+
+    let position = board_visual_information.cell_position(cell);
+    outline_marker.translation.x = position.0;
+    outline_marker.translation.y = position.1;
+    outline_marker.scale = Vec3::splat(board_visual_information.cell_size());
+}
+
+#[derive(Resource, Default)]
+enum BoardInteraction {
+    #[default]
+    Idle,
+    WaitingMove {
+        origin_cell: BoardCell,
+        candidates: Vec<CandidateSquare>,
+        handles: Vec<Entity>,
+    },
+}
+
+impl BoardInteraction {
+    fn reset_to_idle(&mut self, commands: &mut Commands) {
+        match self {
+            BoardInteraction::Idle => (),
+            BoardInteraction::WaitingMove { handles, .. } => {
+                handles.iter().for_each(|handle| {
+                    commands.entity(*handle).despawn();
+                });
+                *self = BoardInteraction::Idle;
+            }
+        }
+    }
+}
+
+fn handle_hover(
+    input_and_output: InputAndOutput,
+    board_and_pieces: BoardAndPieces,
+    chess_game_engine: Res<ChessGameEngine>,
+    mut cell_hover: ResMut<CellHover>,
+    outline_marker: Single<(&mut Transform, &mut Visibility), With<CellOutlineMarker>>,
+) {
+    let (camera, transform) = input_and_output.camera.into_inner();
+    let (mut outline_transform, mut outline_visibility) = outline_marker.into_inner();
+
+    let Some(cell) = input_and_output
+        .window
+        .cursor_position()
+        .and_then(|cursor_position| camera.viewport_to_world_2d(transform, cursor_position).ok())
+        .and_then(|world_position| board_and_pieces.board.locate_cell(world_position))
+    else {
+        if cell_hover.cell.is_some() {
+            *outline_visibility = Visibility::Hidden;
+            cell_hover.cell = None;
+        }
+        return;
+    };
+
+    if let Square::Vacant = &chess_game_engine.board[&cell] {
+        *outline_visibility = Visibility::Hidden;
+        cell_hover.cell = None;
+        return;
+    }
+
+    if cell_hover
+        .cell
+        .as_ref()
+        .is_some_and(|last_hovered| last_hovered == &cell)
+    {
+        return;
+    }
+
+    let position = board_and_pieces.board.cell_position(&cell);
+    outline_transform.translation.x = position.0;
+    outline_transform.translation.y = position.1;
+    outline_transform.scale = Vec3::splat(board_and_pieces.board.cell_size());
+    *outline_visibility = Visibility::Visible;
+    cell_hover.cell = Some(cell);
+}
+
+fn handle_click(
+    mut commands: Commands,
+
+    input_and_output: InputAndOutput,
+
+    interaction_materials: Res<InteractionMaterials>,
+
+    mut board_interaction: ResMut<BoardInteraction>,
+    board_and_pieces: BoardAndPieces,
+    chess_game_engine: ResMut<ChessGameEngine>,
+) {
+    if input_and_output.buttons.just_pressed(MouseButton::Left) {
+        let (camera, transform) = input_and_output.camera.into_inner();
+
+        let Some(selected_cell) = input_and_output
+            .window
+            .cursor_position()
+            .and_then(|cursor_position| {
+                camera.viewport_to_world_2d(transform, cursor_position).ok()
+            })
+            .and_then(|world_position| board_and_pieces.board.locate_cell(world_position))
+        else {
+            return;
+        };
+
+        match &*board_interaction {
+            BoardInteraction::WaitingMove {
+                origin_cell,
+                candidates,
+                handles,
+            } if *origin_cell != selected_cell => {
+                match candidates
+                    .iter()
+                    .find(|candidate| candidate.target_square == selected_cell)
+                {
+                    Some(candidate) => {
+                        println!("Going to move here! {}", candidate.target_square);
+                        return;
+                    }
+                    None => {
+                        board_interaction.reset_to_idle(&mut commands);
+                    }
+                }
+            }
+            BoardInteraction::WaitingMove { .. } => {
+                board_interaction.reset_to_idle(&mut commands);
+                return;
+            }
+            _ => (),
+        }
+
+        let Square::Occupied(piece) = &chess_game_engine.board[&selected_cell] else {
+            return;
+        };
+
+        if piece.color != chess_game_engine.active_color {
+            return;
+        }
+
+        let mut handles = vec![];
+        let candidates = chess_game_engine.generate_legal_moves(
+            selected_cell.clone(),
+            &board_and_pieces.piece_storage,
+            &board_and_pieces.chess_piece_assets,
+        );
+
+        for candidate_move in &candidates {
+            let position = board_and_pieces
+                .board
+                .cell_position(&candidate_move.target_square);
+
+            handles.push(
+                commands
+                    .spawn((
+                        Mesh2d(interaction_materials.action_circle.clone()),
+                        MeshMaterial2d(interaction_materials.action_color.clone()),
+                        Transform::from_xyz(position.0, position.1, 0.0)
+                            .with_scale(Vec3::splat(board_and_pieces.board.cell_size() * 0.15)),
+                    ))
+                    .id(),
+            );
+        }
+
+        *board_interaction = BoardInteraction::WaitingMove {
+            origin_cell: selected_cell,
+            candidates,
+            handles,
+        }
     }
 }
 

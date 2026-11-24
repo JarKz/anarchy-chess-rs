@@ -449,6 +449,25 @@ impl BoardVisualInformation {
             ),
         }
     }
+
+    pub fn locate_cell(&self, world_position: Vec2) -> Option<BoardCell> {
+        let center_position =
+            Vec2::splat(self.board_size()) / 2.0 - Vec2::new(Self::LABEL_PADDING, 0.0);
+        let transition_matrix = Mat2::from_rows(Vec2::new(1.0, 0.0), Vec2::new(0.0, -1.0));
+
+        let local_coords = transition_matrix * world_position + center_position;
+        let cell_board_size = self.cell_board_size();
+
+        if !(0.0..cell_board_size).contains(&local_coords.x)
+            || !(0.0..cell_board_size).contains(&local_coords.y)
+        {
+            return None;
+        }
+
+        let indices = (local_coords / self.cell_size()).floor();
+
+        Some(self.cell_name(indices.y as u32, indices.x as u32))
+    }
 }
 
 pub trait CellPosition<T> {

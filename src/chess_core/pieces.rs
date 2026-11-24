@@ -107,7 +107,7 @@ pub struct ChessPiece {
 }
 
 /// The color of chess piece, defining the side.
-#[derive(Debug, Default, Clone, Deserialize, Display)]
+#[derive(Debug, Default, Clone, Deserialize, Display, PartialEq)]
 pub enum ChessPieceColor {
     #[display("black")]
     Black,
@@ -208,7 +208,7 @@ impl MovementRule {
         let mut candidates = Vec::new();
 
         for generator in &self.generators {
-            for square in generator.start_from(origin_cell.clone()) {
+            'square_generation: for square in generator.start_from(origin_cell.clone()) {
                 let all_conditions_met = self.conditions.iter().all(|condition| {
                     condition.is_met(
                         ConditionCheckContext {
@@ -251,7 +251,7 @@ impl MovementRule {
                             candidate_square.capture = Some(self.on_capture.clone())
                         }
                         ObstructionAction::Discard => {
-                            break;
+                            break 'square_generation;
                         }
                         ObstructionAction::Stop => to_stop = true,
                         ObstructionAction::Continue => (),

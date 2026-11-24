@@ -7,6 +7,12 @@ ChessPieceDefinition(
       conditions: [
         Equal(SelfColor, Color(White))
       ],
+      on_obstruction: ObstructionBehavior(
+        on_ally: [Discard],
+        on_enemy: [Discard],
+        on_empty: [Continue]
+      ),
+      on_capture: (),
       generators: [
         Vector(
           direction: (0, -1),
@@ -21,6 +27,12 @@ ChessPieceDefinition(
       conditions: [
         Equal(SelfColor, Color(Black))
       ],
+      on_obstruction: ObstructionBehavior(
+        on_ally: [Discard],
+        on_enemy: [Discard],
+        on_empty: [Continue]
+      ),
+      on_capture: (),
       generators: [
         Vector(
           direction: (0, 1),
@@ -36,6 +48,12 @@ ChessPieceDefinition(
         Equal(SelfColor, Color(White)),
         Equal(OriginRow, Row('2'))
       ],
+      on_obstruction: ObstructionBehavior(
+        on_ally: [Discard],
+        on_enemy: [Discard],
+        on_empty: [Continue]
+      ),
+      on_capture: (),
       generators: [
         Vector(
           direction: (0, -2),
@@ -53,6 +71,12 @@ ChessPieceDefinition(
         Equal(SelfColor, Color(Black)),
         Equal(OriginRow, Row('7'))
       ],
+      on_obstruction: ObstructionBehavior(
+        on_ally: [Discard],
+        on_enemy: [Discard],
+        on_empty: [Continue]
+      ),
+      on_capture: (),
       generators: [
         Vector(
           direction: (0, 2),
