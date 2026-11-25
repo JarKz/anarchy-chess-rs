@@ -204,7 +204,7 @@ impl MovementRule {
         origin_cell: &BoardCell,
         piece: &ChessPiece,
         chess_game_engine: &ChessGameEngine,
-    ) -> Vec<CandidateSquare> {
+    ) -> Vec<CandidateMove> {
         let mut candidates = Vec::new();
 
         for generator in &self.generators {
@@ -227,7 +227,7 @@ impl MovementRule {
 
                 let target_square = &chess_game_engine.board[&square];
 
-                let mut candidate_square = CandidateSquare {
+                let mut candidate_square = CandidateMove {
                     target_square: square,
                     actions: self.actions.clone(),
                     capture: None,
@@ -270,7 +270,7 @@ impl MovementRule {
     }
 }
 
-pub struct CandidateSquare {
+pub struct CandidateMove {
     pub target_square: BoardCell,
     pub actions: Vec<Action>,
     pub capture: Option<CaptureBehavior>,
@@ -483,7 +483,7 @@ pub enum Value {
 }
 
 impl Value {
-    fn encode_to_string(
+    pub fn encode_to_string(
         &self,
         condition_check_context: ConditionCheckContext,
         chess_game_engine: &ChessGameEngine,
@@ -616,7 +616,10 @@ where
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct CaptureBehavior {}
+pub enum CaptureBehavior {
+    DoNothing,
+    RemovePiece,
+}
 
 /// The list of actions that have to be performed.
 ///
@@ -716,10 +719,10 @@ pub struct ChessPieceImageAssets {
 }
 
 impl ChessPieceImageAssets {
-    pub fn resolve_color(&self, chess_piece_color: &ChessPieceColor) -> &Handle<SvgAsset> {
+    pub fn resolve_color(&self, chess_piece_color: &ChessPieceColor) -> Handle<SvgAsset> {
         match chess_piece_color {
-            ChessPieceColor::White => &self.white,
-            ChessPieceColor::Black => &self.black,
+            ChessPieceColor::White => self.white.clone(),
+            ChessPieceColor::Black => self.black.clone(),
         }
     }
 }

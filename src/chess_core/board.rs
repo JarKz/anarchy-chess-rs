@@ -605,6 +605,7 @@ fn create_cells(
                     } else {
                         board_materials.black.normal
                     },
+                    alpha_mode: bevy::sprite::SpriteAlphaMode::Opaque,
                     custom_size: Some((1.0, 1.0).into()),
                     ..default()
                 },

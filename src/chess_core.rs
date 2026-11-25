@@ -13,15 +13,17 @@ use crate::{
             AsIndex, BoardCell, BoardVisualInformation, CellPosition, ChessBoardPlugin, Label,
         },
         pieces::{
-            CandidateSquare, ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage,
+            CandidateMove, ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage,
             ChessPiecesPlugin, PiecesResourceState,
         },
+        pointer_interaction::PointerInteractionPlugin,
     },
     fen::{self, InitialGameInformation},
 };
 
 pub mod board;
 pub mod pieces;
+pub mod pointer_interaction;
 
 const BOARD_Z: f32 = 0.0;
 const BOARD_MARKS_Z: f32 = 0.1;
@@ -41,28 +43,14 @@ impl Plugin for ChessCorePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VisualChessBoard>()
             .init_resource::<ChessGameEngine>()
-            .init_resource::<PointerInteraction>()
-            .init_resource::<CellHover>()
             .add_plugins(ChessBoardPlugin)
             .add_plugins(ChessPiecesPlugin)
-            .add_systems(
-                Startup,
-                (initialize_materials, initialize_outline_marker).chain(),
-            )
+            .add_plugins(PointerInteractionPlugin)
             .add_systems(OnEnter(PiecesResourceState::Ready), setup_board)
             .add_systems(Update, initial_resize_pieces)
             .add_systems(
                 Update,
-                (resize_pieces_on_board_resize, resize_outline_marker)
-                    .run_if(resource_changed::<BoardVisualInformation>),
-            )
-            .add_systems(
-                PostUpdate,
-                (
-                    handle_mouse_interaction,
-                    move_dragging_piece,
-                    outline_square_on_hover,
-                ),
+                resize_pieces_on_board_resize.run_if(resource_changed::<BoardVisualInformation>),
             );
     }
 }
@@ -145,417 +133,11 @@ fn resize_pieces<'a>(
 }
 
 #[derive(SystemParam)]
-struct Input<'w, 's> {
-    buttons: Res<'w, ButtonInput<MouseButton>>,
-    window: Single<'w, 's, &'static Window>,
-    camera: Single<'w, 's, (&'static Camera, &'static GlobalTransform)>,
-    pointer_interaction: ResMut<'w, PointerInteraction>,
-}
-
-#[derive(SystemParam)]
 struct BoardAndPieces<'w> {
     board: Res<'w, BoardVisualInformation>,
     visual_board: ResMut<'w, VisualChessBoard>,
     piece_storage: Res<'w, ChessPieceStorage>,
     chess_piece_assets: Res<'w, Assets<ChessPieceAsset>>,
-}
-
-#[derive(Resource)]
-struct InteractionMaterials {
-    action_circle: Handle<Mesh>,
-    action_color: Handle<ColorMaterial>,
-
-    outline_square: Handle<Mesh>,
-    outline_color: Handle<ColorMaterial>,
-}
-
-fn initialize_materials(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    commands.insert_resource(InteractionMaterials {
-        action_circle: meshes.add(Circle::new(1.0)),
-        action_color: materials.add(Color::srgba(0.5, 0.5, 0.5, 0.6)),
-
-        outline_square: meshes.add(Rectangle::new(1.0, 1.0).to_ring(0.04)),
-        outline_color: materials.add(Color::WHITE),
-    })
-}
-
-#[derive(Component)]
-struct CellOutlineMarker;
-
-#[derive(Resource, Default)]
-struct CellHover {
-    cell: Option<BoardCell>,
-}
-
-fn initialize_outline_marker(
-    mut commands: Commands,
-    interaction_materials: Res<InteractionMaterials>,
-) {
-    commands.spawn((
-        CellOutlineMarker,
-        Mesh2d(interaction_materials.outline_square.clone()),
-        MeshMaterial2d(interaction_materials.outline_color.clone()),
-        Transform::from_xyz(0.0, 0.0, BOARD_MARKS_Z),
-        Visibility::Hidden,
-    ));
-}
-
-fn resize_outline_marker(
-    board_visual_information: Res<BoardVisualInformation>,
-    cell_hover: Res<CellHover>,
-    mut outline_marker: Single<&mut Transform, With<CellOutlineMarker>>,
-) {
-    let Some(cell) = &cell_hover.cell else {
-        return;
-    };
-
-    let position = board_visual_information.cell_position(cell);
-    outline_marker.translation.x = position.0;
-    outline_marker.translation.y = position.1;
-    outline_marker.scale = Vec3::splat(board_visual_information.cell_size());
-}
-
-#[derive(Resource, Default)]
-enum PointerInteraction {
-    #[default]
-    Idle,
-    WaitingMove {
-        selected_piece: Entity,
-        has_released: bool,
-
-        origin_cell: BoardCell,
-        candidates: Vec<CandidateSquare>,
-        handles: Vec<Entity>,
-    },
-}
-
-impl PointerInteraction {
-    fn reset_to_idle(&mut self, commands: &mut Commands) {
-        match self {
-            PointerInteraction::Idle => (),
-            PointerInteraction::WaitingMove { handles, .. } => {
-                handles.iter().for_each(|handle| {
-                    commands.entity(*handle).despawn();
-                });
-                *self = PointerInteraction::Idle;
-            }
-        }
-    }
-
-    fn release_piece(&mut self) {
-        match self {
-            PointerInteraction::Idle => (),
-            PointerInteraction::WaitingMove { has_released, .. } => {
-                *has_released = true;
-            }
-        }
-    }
-}
-
-#[derive(Component)]
-struct DraggingPiece;
-
-fn outline_square_on_hover(
-    input: Input,
-    board_and_pieces: BoardAndPieces,
-    chess_game_engine: Res<ChessGameEngine>,
-    mut cell_hover: ResMut<CellHover>,
-    outline_marker: Single<(&mut Transform, &mut Visibility), With<CellOutlineMarker>>,
-
-    dragging_piece_query: Query<(), With<DraggingPiece>>,
-) {
-    let (camera, transform) = input.camera.into_inner();
-    let (mut outline_transform, mut outline_visibility) = outline_marker.into_inner();
-
-    let Some(cell) = input
-        .window
-        .cursor_position()
-        .and_then(|cursor_position| camera.viewport_to_world_2d(transform, cursor_position).ok())
-        .and_then(|world_position| board_and_pieces.board.locate_cell(world_position))
-    else {
-        if cell_hover.cell.is_some() {
-            *outline_visibility = Visibility::Hidden;
-            cell_hover.cell = None;
-        }
-        return;
-    };
-
-    match (&*input.pointer_interaction, &chess_game_engine.board[&cell]) {
-        (PointerInteraction::WaitingMove { selected_piece, .. }, Square::Vacant)
-            if dragging_piece_query.get(*selected_piece).is_ok() => {}
-        (_, Square::Vacant) => {
-            *outline_visibility = Visibility::Hidden;
-            cell_hover.cell = None;
-            return;
-        }
-        _ => (),
-    }
-
-    if cell_hover
-        .cell
-        .as_ref()
-        .is_some_and(|last_hovered| last_hovered == &cell)
-    {
-        return;
-    }
-
-    let position = board_and_pieces.board.cell_position(&cell);
-    outline_transform.translation.x = position.0;
-    outline_transform.translation.y = position.1;
-    outline_transform.scale = Vec3::splat(board_and_pieces.board.cell_size());
-    *outline_visibility = Visibility::Visible;
-    cell_hover.cell = Some(cell);
-}
-
-fn handle_mouse_interaction(
-    commands: Commands,
-
-    input: Input,
-
-    interaction_materials: Res<InteractionMaterials>,
-
-    board_and_pieces: BoardAndPieces,
-    chess_game_engine: ResMut<ChessGameEngine>,
-
-    dragging_piece_query: Query<(&BoardCell, &mut Transform), With<DraggingPiece>>,
-) {
-    if input.buttons.just_pressed(MouseButton::Left) {
-        on_piece_drag(
-            commands,
-            input,
-            interaction_materials,
-            board_and_pieces,
-            chess_game_engine,
-        );
-    } else if input.buttons.just_released(MouseButton::Left) {
-        on_piece_release(
-            commands,
-            input,
-            board_and_pieces,
-            chess_game_engine,
-            dragging_piece_query,
-        );
-    }
-}
-
-fn on_piece_drag(
-    mut commands: Commands,
-    mut input: Input,
-
-    interaction_materials: Res<InteractionMaterials>,
-
-    board_and_pieces: BoardAndPieces,
-    chess_game_engine: ResMut<ChessGameEngine>,
-) {
-    let (camera, transform) = input.camera.into_inner();
-
-    let Some(selected_cell) = input
-        .window
-        .cursor_position()
-        .and_then(|cursor_position| camera.viewport_to_world_2d(transform, cursor_position).ok())
-        .and_then(|world_position| board_and_pieces.board.locate_cell(world_position))
-    else {
-        return;
-    };
-
-    match &*input.pointer_interaction {
-        PointerInteraction::WaitingMove {
-            origin_cell,
-            candidates,
-            handles,
-            ..
-        } if *origin_cell != selected_cell => {
-            match candidates
-                .iter()
-                .find(|candidate| candidate.target_square == selected_cell)
-            {
-                Some(candidate) => {
-                    println!("Going to move here! {}", candidate.target_square);
-                    return;
-                }
-                None => {
-                    input.pointer_interaction.reset_to_idle(&mut commands);
-                }
-            }
-        }
-        _ => (),
-    }
-
-    let Square::Occupied(piece) = &chess_game_engine.board[&selected_cell] else {
-        return;
-    };
-
-    if piece.color != chess_game_engine.active_color {
-        return;
-    }
-
-    let Some(piece_entity) = board_and_pieces.visual_board.pieces.get(&selected_cell) else {
-        return;
-    };
-    commands.entity(*piece_entity).insert(DraggingPiece);
-
-    match &mut *input.pointer_interaction {
-        PointerInteraction::Idle => {
-            let mut handles = vec![];
-            let candidates = chess_game_engine.generate_legal_moves(
-                selected_cell.clone(),
-                &board_and_pieces.piece_storage,
-                &board_and_pieces.chess_piece_assets,
-            );
-
-            for candidate_move in &candidates {
-                let position = board_and_pieces
-                    .board
-                    .cell_position(&candidate_move.target_square);
-
-                handles.push(
-                    commands
-                        .spawn((
-                            Mesh2d(interaction_materials.action_circle.clone()),
-                            MeshMaterial2d(interaction_materials.action_color.clone()),
-                            Transform::from_xyz(position.0, position.1, BOARD_MARKS_Z)
-                                .with_scale(Vec3::splat(board_and_pieces.board.cell_size() * 0.15)),
-                        ))
-                        .id(),
-                );
-            }
-
-            *input.pointer_interaction = PointerInteraction::WaitingMove {
-                selected_piece: *piece_entity,
-                has_released: false,
-                origin_cell: selected_cell,
-                candidates,
-                handles,
-            };
-        }
-        PointerInteraction::WaitingMove { has_released, .. } => {
-            *has_released = true;
-        }
-    }
-}
-
-fn on_piece_release(
-    mut commands: Commands,
-    mut input: Input,
-    board_and_pieces: BoardAndPieces,
-    chess_game_engine: ResMut<ChessGameEngine>,
-
-    mut dragging_piece_query: Query<(&BoardCell, &mut Transform), With<DraggingPiece>>,
-) {
-    let PointerInteraction::WaitingMove {
-        selected_piece,
-        has_released,
-        candidates,
-        ..
-    } = &mut *input.pointer_interaction
-    else {
-        return;
-    };
-
-    let Ok((origin_cell, mut transform)) = dragging_piece_query.get_mut(*selected_piece) else {
-        return;
-    };
-
-    let (camera, camera_transform) = input.camera.into_inner();
-
-    let Some(selected_cell) = input
-        .window
-        .cursor_position()
-        .and_then(|cursor_position| {
-            camera
-                .viewport_to_world_2d(camera_transform, cursor_position)
-                .ok()
-        })
-        .and_then(|world_position| board_and_pieces.board.locate_cell(world_position))
-    else {
-        reset_drag_piece(
-            &mut commands,
-            *selected_piece,
-            origin_cell,
-            &mut transform,
-            &board_and_pieces.board,
-        );
-        input.pointer_interaction.reset_to_idle(&mut commands);
-        return;
-    };
-
-    reset_drag_piece(
-        &mut commands,
-        *selected_piece,
-        origin_cell,
-        &mut transform,
-        &board_and_pieces.board,
-    );
-
-    match candidates
-        .iter()
-        .find(|candidate| candidate.target_square == selected_cell)
-    {
-        Some(candidate) => {
-            println!("dropped to {}!", candidate.target_square);
-        }
-        None => {
-            if *has_released && *origin_cell == selected_cell {
-                input.pointer_interaction.reset_to_idle(&mut commands);
-            } else {
-                input.pointer_interaction.release_piece();
-            }
-        }
-    }
-}
-
-fn move_dragging_piece(
-    mut commands: Commands,
-    mut input: Input,
-    board_visual_information: Res<BoardVisualInformation>,
-    dragging_piece: Single<(Entity, &BoardCell, &mut Transform), With<DraggingPiece>>,
-) {
-    if !input.buttons.pressed(MouseButton::Left) {
-        return;
-    }
-
-    let (camera, camera_transform) = input.camera.into_inner();
-    let (piece, board_cell, mut transform) = dragging_piece.into_inner();
-
-    let cursor_position = match input.window.cursor_position() {
-        Some(position) => position,
-        None => {
-            reset_drag_piece(
-                &mut commands,
-                piece,
-                board_cell,
-                &mut transform,
-                &board_visual_information,
-            );
-            input.pointer_interaction.release_piece();
-            return;
-        }
-    };
-
-    let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
-        return;
-    };
-
-    transform.translation = world_position.extend(DRAGGING_PIECE_Z);
-}
-
-fn reset_drag_piece(
-    commands: &mut Commands,
-    piece: Entity,
-    board_cell: &BoardCell,
-    transform: &mut Transform,
-    board_visual_information: &BoardVisualInformation,
-) {
-    commands.entity(piece).remove::<DraggingPiece>();
-
-    let position = board_visual_information.cell_position(board_cell);
-    transform.translation.x = position.0;
-    transform.translation.y = position.1;
-    transform.translation.z = 0.2;
 }
 
 /// The chess game engine that provides functionality of managing chess pieces, moves, rules, states
@@ -576,19 +158,197 @@ pub struct ChessGameEngine {
     /// The total number of full moves, starting from 1. Increments after each move from the black side.
     fullmove_number: NonZeroU32,
 
-    // moves: Vec<MoveInfo>,
     /// The current chess board.
     board: ChessBoard,
+
+    moves: Vec<MoveInfo>,
+}
+
+pub struct MoveError {
+    pub kind: MoveErrorKind,
+    pub message: String,
+}
+
+pub enum MoveErrorKind {
+    MissingPieceAtOrigin,
+    MissingPieceAtTarget,
 }
 
 impl ChessGameEngine {
+    pub fn make_move(
+        &mut self,
+        origin_cell: &BoardCell,
+        candidate_move: &CandidateMove,
+    ) -> Result<MoveInfo, MoveError> {
+        let mut changes = vec![];
+
+        let Square::Occupied(piece) = self.board[origin_cell].clone() else {
+            return Err(MoveError {
+                kind: MoveErrorKind::MissingPieceAtOrigin,
+                message: "To make a move, the piece should exist at origin cell".to_string(),
+            });
+        };
+
+        if let Some(capture_behavior) = &candidate_move.capture {
+            match capture_behavior {
+                pieces::CaptureBehavior::DoNothing => (),
+                pieces::CaptureBehavior::RemovePiece => {
+                    let Square::Occupied(target_piece) =
+                        self.board[&candidate_move.target_square].take()
+                    else {
+                        return Err(MoveError {
+                            kind: MoveErrorKind::MissingPieceAtTarget,
+                            message: "The target piece should be exist at target cell to capture"
+                                .to_string(),
+                        });
+                    };
+
+                    changes.push(ChessGameChange::PieceRemoved {
+                        piece: target_piece,
+                        from: candidate_move.target_square.clone(),
+                    })
+                }
+            }
+        }
+
+        for action in &candidate_move.actions {
+            match action {
+                pieces::Action::MoveSelf => {
+                    // INFO: there's not so much verifications because engine assumes that the move
+                    // definition is perfectly valid and check only at debug release.
+                    debug_assert!(self.board[&candidate_move.target_square].is_vacant());
+                    self.board[&candidate_move.target_square] = self.board[origin_cell].take();
+
+                    changes.push(ChessGameChange::PieceMoved {
+                        from: origin_cell.clone(),
+                        to: candidate_move.target_square.clone(),
+                    });
+                }
+                pieces::Action::Move { from, to } => {
+                    // INFO: there's not so much verifications because engine assumes that the move
+                    // definition is perfectly valid and check only at debug release.
+                    debug_assert!(self.board[to].is_vacant());
+                    self.board[to] = self.board[from].take();
+
+                    changes.push(ChessGameChange::PieceMoved {
+                        from: from.clone(),
+                        to: to.clone(),
+                    });
+                }
+                pieces::Action::RemoveState(state_key) => {
+                    if let Some(state_value) = self.states.remove(state_key.clone()) {
+                        changes.push(ChessGameChange::RemovedState {
+                            state_key: state_key.clone(),
+                            state_value,
+                        })
+                    }
+                }
+                pieces::Action::AddState { name, value } => {
+                    let state_value: StateValue = value
+                        .encode_to_string(
+                            pieces::ConditionCheckContext {
+                                piece: &piece,
+                                origin_cell,
+                                target_cell: &candidate_move.target_square,
+                            },
+                            self,
+                        )
+                        .into();
+
+                    if let Some(state_value) = self.states.insert(name.clone(), state_value.clone())
+                    {
+                        changes.push(ChessGameChange::RemovedState {
+                            state_key: name.clone(),
+                            state_value,
+                        })
+                    }
+
+                    changes.push(ChessGameChange::AddedState {
+                        state_key: name.clone(),
+                        state_value,
+                    })
+                }
+            }
+        }
+
+        // TODO: increment halfmove clock
+
+        match self.active_color {
+            ChessPieceColor::Black => {
+                self.fullmove_number = self.fullmove_number.saturating_add(1);
+                self.active_color = ChessPieceColor::White;
+            }
+            ChessPieceColor::White => {
+                self.active_color = ChessPieceColor::Black;
+            }
+        }
+
+        let move_info = MoveInfo { changes };
+        self.moves.push(move_info.clone());
+
+        Ok(move_info)
+    }
+
+    pub fn unmake_move(&mut self) {
+        let Some(move_info) = self.moves.pop() else {
+            return;
+        };
+
+        // TODO: reduce the halfmove clock
+
+        match self.active_color {
+            ChessPieceColor::Black => {
+                self.active_color = ChessPieceColor::White;
+            }
+            ChessPieceColor::White => {
+                self.active_color = ChessPieceColor::Black;
+                if self.fullmove_number.get() > 1 {
+                    self.fullmove_number = NonZeroU32::new(self.fullmove_number.get() - 1)
+                        .expect("The number is greater than 1");
+                }
+            }
+        }
+
+        for change in move_info.changes.into_iter().rev() {
+            match change {
+                ChessGameChange::PieceMoved { from, to } => {
+                    self.board[&from] = self.board[&to].take();
+                }
+                ChessGameChange::PieceRemoved { piece, from } => {
+                    self.board[&from] = Square::Occupied(piece);
+                }
+                ChessGameChange::AddedState { state_key, .. } => {
+                    self.states.remove(state_key);
+                }
+                ChessGameChange::RemovedState {
+                    state_key,
+                    state_value,
+                } => {
+                    self.states.insert(state_key, state_value);
+                }
+            }
+        }
+    }
+
+    fn is_move_legal(&mut self, origin_cell: &BoardCell, candidate_move: &CandidateMove) -> bool {
+        if self.make_move(origin_cell, candidate_move).is_err() {
+            return false;
+        }
+
+        // TODO: check whether VIPs (very important pieces) are under attack or not.
+
+        self.unmake_move();
+
+        true
+    }
+
     pub fn generate_legal_moves(
-        &self,
+        &mut self,
         cell: BoardCell,
         piece_storage: &ChessPieceStorage,
         chess_piece_assets: &Assets<ChessPieceAsset>,
-    ) -> Vec<CandidateSquare> {
-        let Square::Occupied(piece) = &self.board[&cell] else {
+    ) -> Vec<CandidateMove> {
+        let Square::Occupied(piece) = self.board[&cell].clone() else {
             return vec![];
         };
 
@@ -597,18 +357,17 @@ impl ChessGameEngine {
             return vec![];
         };
 
-        let mut candidates = vec![];
-
-        for movement_rule in &asset.definition.movement_rules {
-            candidates.extend(movement_rule.generate_candidate_squares(&cell, piece, self));
-        }
-
-        // TODO: these candidates are not legal moves
-        // to filter from these candidates need to make a move
-        // and figure out whether the move is legal or not (by verifying
-        // some properties using the ChessGameEngine)
+        let candidates: Vec<_> = asset
+            .definition
+            .movement_rules
+            .iter()
+            .flat_map(|movement_rule| movement_rule.generate_candidate_squares(&cell, &piece, self))
+            .collect();
 
         candidates
+            .into_iter()
+            .filter(|candidate_move| self.is_move_legal(&cell, candidate_move))
+            .collect()
     }
 }
 
@@ -622,6 +381,7 @@ impl Default for ChessGameEngine {
             halfmove_clock: 0,
             fullmove_number: NonZeroU32::new(1).unwrap(),
             board: ChessBoard::default(),
+            moves: vec![],
         }
     }
 }
@@ -669,6 +429,7 @@ impl From<InitialGameInformation> for ChessGameEngine {
             halfmove_clock: information.halfmove_clock,
             fullmove_number: information.fullmove_number,
             board: ChessBoard::from(&information.pieces),
+            moves: vec![],
         }
     }
 }
@@ -702,6 +463,13 @@ impl ChessGameStates {
     {
         self.states
             .insert(key.map(<SN as Into<StateName>>::into), value.into())
+    }
+
+    fn remove<SN>(&mut self, key: Side<SN>) -> Option<StateValue>
+    where
+        SN: Into<StateName>,
+    {
+        self.states.remove(&key.map(<SN as Into<StateName>>::into))
     }
 }
 
@@ -866,6 +634,16 @@ enum Square {
     Occupied(ChessPiece),
 }
 
+impl Square {
+    fn is_vacant(&self) -> bool {
+        matches!(self, Square::Vacant)
+    }
+
+    fn take(&mut self) -> Square {
+        std::mem::replace(self, Square::Vacant)
+    }
+}
+
 impl Default for ChessBoard {
     fn default() -> Self {
         Self {
@@ -884,4 +662,29 @@ impl From<&HashMap<BoardCell, ChessPiece>> for ChessBoard {
 
         board
     }
+}
+
+#[derive(Clone)]
+struct MoveInfo {
+    changes: Vec<ChessGameChange>,
+}
+
+#[derive(Clone)]
+enum ChessGameChange {
+    PieceMoved {
+        from: BoardCell,
+        to: BoardCell,
+    },
+    PieceRemoved {
+        piece: ChessPiece,
+        from: BoardCell,
+    },
+    AddedState {
+        state_key: Side<StateName>,
+        state_value: StateValue,
+    },
+    RemovedState {
+        state_key: Side<StateName>,
+        state_value: StateValue,
+    },
 }
