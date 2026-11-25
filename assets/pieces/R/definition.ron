@@ -1,11 +1,63 @@
 ChessPieceDefinition(
-  short_name: "R",
-  full_name: "Rook",
+    short_name: "R",
+    full_name: "Rook",
 
-  movement_rules: [],
+    is_vip: false,
 
-  images: ChessPieceImages(
-    white: "white_rook.svg",
-    black: "black_rook.svg"
-  )
+    movement_rules: [
+        MovementRule(
+            conditions: [],
+            on_obstruction: ObstructionBehavior(
+                on_ally: [
+                    Discard,
+                ],
+                on_enemy: [
+                    Capture,
+                    Stop,
+                ],
+                on_empty: [
+                    Continue,
+                ],
+            ),
+            on_capture: RemovePiece(Target),
+            generators: [
+                Vector(
+                    direction: (
+                        0,
+                        -1,
+                    ),
+                    max_distance: Infinite,
+                ),
+                Vector(
+                    direction: (
+                        1,
+                        0,
+                    ),
+                    max_distance: Infinite,
+                ),
+                Vector(
+                    direction: (
+                        0,
+                        1,
+                    ),
+                    max_distance: Infinite,
+                ),
+                Vector(
+                    direction: (
+                        -1,
+                        0,
+                    ),
+                    max_distance: Infinite,
+                ),
+            ],
+            actions: [
+                MoveSelf,
+                // TODO: remove the kingside/queenside castling based on its starting position,
+            ],
+        ),
+    ],
+    images: ChessPieceImages(
+        white: "white_rook.svg",
+        black: "black_rook.svg",
+    ),
 )

@@ -100,7 +100,7 @@ impl ChessPieceStorage {
 pub struct ChessPieceName(pub String);
 
 /// A short chess piece description, used only for rendering.
-#[derive(Component, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct ChessPiece {
     pub name: ChessPieceName,
     pub color: ChessPieceColor,
@@ -123,6 +123,13 @@ impl ChessPieceColor {
             (self, other),
             (Self::Black, Self::Black) | (Self::White, Self::White)
         )
+    }
+
+    pub fn opposite(&self) -> Self {
+        match self {
+            ChessPieceColor::Black => ChessPieceColor::White,
+            ChessPieceColor::White => ChessPieceColor::Black,
+        }
     }
 }
 
@@ -151,6 +158,11 @@ pub struct ChessPieceDefinition {
 
     /// The full name of the chess piece to display to a user.
     pub full_name: String,
+
+    /// Is this piece very important or not.
+    ///
+    /// VIP — very important piece.
+    pub is_vip: bool,
 
     /// The list of movement rules of the chess pieces.
     pub movement_rules: Vec<MovementRule>,
@@ -303,8 +315,16 @@ pub enum MoveCondition {
     /// the [`Value::Row`] will have tag "row" before the value (i.e. "row:e").
     Equal(Value, Value),
 
+    /// Checks whether the underlying value is empty or not.
+    ///
+    /// It uses logical evaluation instead of converting everything into strings.
+    IsEmpty(Value),
+
     /// Negates the inner condition.
     Not(Box<MoveCondition>),
+
+    /// Returns true if one of conditions is true.
+    Or(Box<MoveCondition>, Box<MoveCondition>),
 }
 
 impl MoveCondition {
@@ -335,8 +355,50 @@ impl MoveCondition {
                 lhs.encode_to_string(condition_check_context.clone(), chess_game_engine)
                     == rhs.encode_to_string(condition_check_context, chess_game_engine)
             }
+            MoveCondition::IsEmpty(value) => match value {
+                Value::State(state_key) => {
+                    chess_game_engine.states.get(state_key.clone()).is_none()
+                }
+                Value::Square(square) => match square {
+                    Square::Origin => {
+                        chess_game_engine.board[condition_check_context.origin_cell].is_vacant()
+                    }
+                    Square::Target => {
+                        chess_game_engine.board[condition_check_context.target_cell].is_vacant()
+                    }
+                    Square::Explicit(board_cell) => chess_game_engine.board[board_cell].is_vacant(),
+                    Square::OffsetFromOrigin(vector) => {
+                        let Some(row) =
+                            condition_check_context.origin_cell.row.clone() + vector.y()
+                        else {
+                            return false;
+                        };
+                        let Some(col) =
+                            condition_check_context.origin_cell.col.clone() + vector.x()
+                        else {
+                            return false;
+                        };
+
+                        chess_game_engine.board[&BoardCell { col, row }].is_vacant()
+                    }
+                },
+
+                // INFO: not supported at current moment.
+                Value::SelfColor
+                | Value::Color(_)
+                | Value::OriginColumn
+                | Value::TargetColumn
+                | Value::OriginRow
+                | Value::TargetRow
+                | Value::Row(_)
+                | Value::Column(_) => false,
+            },
             MoveCondition::Not(move_condition) => {
                 !move_condition.is_met(condition_check_context, chess_game_engine)
+            }
+            MoveCondition::Or(lhs, rhs) => {
+                lhs.is_met(condition_check_context.clone(), chess_game_engine)
+                    || rhs.is_met(condition_check_context, chess_game_engine)
             }
         }
     }
@@ -364,7 +426,7 @@ pub enum MoveGenerator {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-enum MoveDistance {
+pub enum MoveDistance {
     /// The finite amount of a distance.
     Times(NonZeroU32),
 
@@ -618,7 +680,7 @@ where
 #[derive(Debug, Deserialize, Clone)]
 pub enum CaptureBehavior {
     DoNothing,
-    RemovePiece,
+    RemovePiece(Square),
 }
 
 /// The list of actions that have to be performed.
@@ -666,8 +728,9 @@ pub enum Action {
 ///
 /// Also it means that a move can pass through any other pieces,
 /// i.e. "jumps over them", like the knight.
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Clone, Copy, Display)]
 #[serde(from = "[i32; 2]")]
+#[display("({}, {})", _0[0], _0[1])]
 pub struct Vector([i32; 2]);
 
 impl Vector {

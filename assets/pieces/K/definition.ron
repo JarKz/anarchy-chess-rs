@@ -1,11 +1,94 @@
 ChessPieceDefinition(
-  short_name: "K",
-  full_name: "King",
+    short_name: "K",
+    full_name: "King",
 
-  movement_rules: [],
+    is_vip: true,
 
-  images: ChessPieceImages(
-    white: "white_king.svg",
-    black: "black_king.svg"
-  )
+    movement_rules: [
+        MovementRule(
+            conditions: [],
+            on_obstruction: ObstructionBehavior(
+                on_ally: [
+                    Discard,
+                ],
+                on_enemy: [
+                    Capture,
+                    Stop,
+                ],
+                on_empty: [
+                    Continue,
+                ],
+            ),
+            on_capture: RemovePiece(Target),
+            generators: [
+                Vector(
+                    direction: (
+                        0,
+                        -1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        1,
+                        -1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        1,
+                        0,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        1,
+                        1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        0,
+                        1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        -1,
+                        1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        -1,
+                        0,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        -1,
+                        -1,
+                    ),
+                    max_distance: Times(1),
+                ),
+            ],
+            actions: [
+                MoveSelf,
+                // RemoveState("kingside_castling"),
+                // RemoveState("queenside_castling"),
+            ],
+        ),
+        // TODO: implement kingside castling
+        // TODO: implement queenside castling
+    ],
+    images: ChessPieceImages(
+        white: "white_king.svg",
+        black: "black_king.svg",
+    ),
 )

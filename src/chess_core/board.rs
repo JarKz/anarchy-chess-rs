@@ -46,9 +46,9 @@ fn resize_board(
     for (cell, mut transform) in board_query {
         transform.scale = Vec3::splat(cell_size);
 
-        let cell_position = board_visual_information.cell_position(cell);
-        transform.translation.x = cell_position.0;
-        transform.translation.y = cell_position.1;
+        transform.translation = board_visual_information
+            .cell_position(cell)
+            .extend(transform.translation.z);
     }
 }
 
@@ -471,11 +471,11 @@ impl BoardVisualInformation {
 }
 
 pub trait CellPosition<T> {
-    fn cell_position(&self, key: T) -> (f32, f32);
+    fn cell_position(&self, key: T) -> Vec2;
 }
 
 impl CellPosition<(u32, u32)> for BoardVisualInformation {
-    fn cell_position(&self, (row, col): (u32, u32)) -> (f32, f32) {
+    fn cell_position(&self, (row, col): (u32, u32)) -> Vec2 {
         let board_size = self.board_size();
         let cell_size = self.cell_size();
 
@@ -484,7 +484,7 @@ impl CellPosition<(u32, u32)> for BoardVisualInformation {
             board_size / 2.0 - cell_size / 2.0,
         );
 
-        (
+        vec2(
             top_left_position.0 + cell_size * col as f32,
             top_left_position.1 - cell_size * row as f32,
         )
@@ -492,7 +492,7 @@ impl CellPosition<(u32, u32)> for BoardVisualInformation {
 }
 
 impl CellPosition<&BoardCell> for BoardVisualInformation {
-    fn cell_position(&self, cell: &BoardCell) -> (f32, f32) {
+    fn cell_position(&self, cell: &BoardCell) -> Vec2 {
         self.cell_position(self.cell_index(cell))
     }
 }
@@ -609,7 +609,7 @@ fn create_cells(
                     custom_size: Some((1.0, 1.0).into()),
                     ..default()
                 },
-                Transform::from_xyz(cell_position.0, cell_position.1, BOARD_Z)
+                Transform::from_translation(cell_position.extend(BOARD_Z))
                     .with_scale(Vec3::splat(cell_size)),
             ));
 

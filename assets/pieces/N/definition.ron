@@ -1,11 +1,90 @@
 ChessPieceDefinition(
-  short_name: "N",
-  full_name: "Knight",
+    short_name: "N",
+    full_name: "Knight",
 
-  movement_rules: [],
+    is_vip: false,
 
-  images: ChessPieceImages(
-    white: "white_knight.svg",
-    black: "black_knight.svg"
-  )
+    movement_rules: [
+        MovementRule(
+            conditions: [],
+            on_obstruction: ObstructionBehavior(
+                on_ally: [
+                    Discard,
+                ],
+                on_enemy: [
+                    Capture,
+                    Stop,
+                ],
+                on_empty: [
+                    Continue,
+                ],
+            ),
+            on_capture: RemovePiece(Target),
+            generators: [
+                Vector(
+                    direction: (
+                        1,
+                        -2,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        2,
+                        -1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        2,
+                        1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        1,
+                        2,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        -1,
+                        2,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        -2,
+                        1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        -2,
+                        -1,
+                    ),
+                    max_distance: Times(1),
+                ),
+                Vector(
+                    direction: (
+                        -1,
+                        -2,
+                    ),
+                    max_distance: Times(1),
+                ),
+            ],
+            actions: [
+                MoveSelf,
+            ],
+        ),
+    ],
+    images: ChessPieceImages(
+        white: "white_knight.svg",
+        black: "black_knight.svg",
+    ),
 )

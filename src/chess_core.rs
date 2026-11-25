@@ -10,13 +10,14 @@ use serde::Deserialize;
 use crate::{
     chess_core::{
         board::{
-            AsIndex, BoardCell, BoardVisualInformation, CellPosition, ChessBoardPlugin, Label,
+            AsIndex, BoardCell, BoardVisualInformation, CellPosition, ChessBoardPlugin, Column,
+            Label, Row,
         },
         pieces::{
             CandidateMove, ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage,
-            ChessPiecesPlugin, PiecesResourceState,
+            ChessPiecesPlugin, PiecesResourceState, Vector,
         },
-        pointer_interaction::PointerInteractionPlugin,
+        pointer_interaction::{PieceMessageBroker, PointerInteractionPlugin},
     },
     fen::{self, InitialGameInformation},
 };
@@ -32,17 +33,12 @@ const DRAGGING_PIECE_Z: f32 = 0.3;
 
 pub struct ChessCorePlugin {}
 
-#[derive(Resource, Default)]
-struct VisualChessBoard {
-    labels: HashMap<Label, Entity>,
-    cells: HashMap<BoardCell, Entity>,
-    pieces: HashMap<BoardCell, Entity>,
-}
-
 impl Plugin for ChessCorePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VisualChessBoard>()
             .init_resource::<ChessGameEngine>()
+            .add_message::<PieceRemoved>()
+            .add_message::<PieceMoved>()
             .add_plugins(ChessBoardPlugin)
             .add_plugins(ChessPiecesPlugin)
             .add_plugins(PointerInteractionPlugin)
@@ -51,7 +47,85 @@ impl Plugin for ChessCorePlugin {
             .add_systems(
                 Update,
                 resize_pieces_on_board_resize.run_if(resource_changed::<BoardVisualInformation>),
-            );
+            )
+            .add_systems(Update, (remove_piece, start_piece_animation, animate_piece));
+    }
+}
+
+#[derive(Resource, Default)]
+struct VisualChessBoard {
+    labels: HashMap<Label, Entity>,
+    cells: HashMap<BoardCell, Entity>,
+    pieces: HashMap<BoardCell, Entity>,
+}
+
+impl VisualChessBoard {
+    fn process_moves(
+        &mut self,
+        move_info: MoveInfo,
+        board_visual_information: &BoardVisualInformation,
+        origin_cell: &BoardCell,
+        origin_piece_translation: Vec2,
+        piece_message_broker: &mut PieceMessageBroker,
+        commands: &mut Commands,
+    ) {
+        for change in move_info.changes {
+            match change {
+                ChessGameChange::PieceMoved { from, to } => {
+                    if &from == origin_cell {
+                        self.move_piece(
+                            &from,
+                            &to,
+                            origin_piece_translation,
+                            &mut piece_message_broker.piece_moved_writer,
+                            commands,
+                        );
+                    } else {
+                        self.move_piece(
+                            &from,
+                            &to,
+                            board_visual_information.cell_position(&from),
+                            &mut piece_message_broker.piece_moved_writer,
+                            commands,
+                        );
+                    }
+                }
+                ChessGameChange::PieceRemoved { from, .. } => {
+                    self.remove_piece(&from, &mut piece_message_broker.piece_removed_writer);
+                }
+                ChessGameChange::AddedState { .. } | ChessGameChange::RemovedState { .. } => (),
+            }
+        }
+    }
+
+    fn move_piece(
+        &mut self,
+        from: &BoardCell,
+        to: &BoardCell,
+        piece_translation: Vec2,
+        message_writer: &mut MessageWriter<PieceMoved>,
+        commands: &mut Commands,
+    ) {
+        let Some(piece) = self.pieces.remove(from) else {
+            return;
+        };
+
+        debug_assert!(self.pieces.insert(to.clone(), piece).is_none());
+        commands.entity(piece).insert(to.clone());
+
+        message_writer.write(PieceMoved {
+            origin: piece_translation,
+            target_cell: to.clone(),
+            piece,
+        });
+    }
+
+    fn remove_piece(&mut self, from: &BoardCell, message_writer: &mut MessageWriter<PieceRemoved>) {
+        let Some(piece) = self.pieces.remove(from) else {
+            return;
+        };
+
+        message_writer.write(PieceRemoved { entity: piece });
     }
 }
 
@@ -68,7 +142,7 @@ fn setup_board(
     const DEFAULT_PIECE_SIZE: u32 = 256;
 
     let input = "header: orientation=w\n\
-                       rnbqkbnr/pppppppp/8/8/3pp3/4P3/PPPP1PPP/RNBQKBNR w KQkq - 0 1";
+                       rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     let initial_game_information = fen::parse(input).unwrap();
 
     board_visual_information.orientation = initial_game_information.headers.orientation.clone();
@@ -87,7 +161,7 @@ fn setup_board(
                     cell.clone(),
                     Svg(chess_piece_asset.images.resolve_color(&piece.color).clone()),
                     SvgSize::both(Unit::pixels(DEFAULT_PIECE_SIZE)),
-                    Transform::from_xyz(translation.0, translation.1, PIECE_Z),
+                    Transform::from_translation(translation.extend(PIECE_Z)),
                 ))
                 .id(),
         );
@@ -124,11 +198,73 @@ fn resize_pieces<'a>(
     let piece_size = board_visual_information.cell_size();
 
     for (cell, mut sprite, mut transform) in pieces {
-        let cell_position = board_visual_information.cell_position(cell);
-        transform.translation.x = cell_position.0;
-        transform.translation.y = cell_position.1;
-
+        transform.translation = board_visual_information
+            .cell_position(cell)
+            .extend(transform.translation.z);
         sprite.custom_size = Some(Vec2::splat(piece_size));
+    }
+}
+
+#[derive(Message)]
+pub struct PieceRemoved {
+    entity: Entity,
+}
+
+fn remove_piece(mut commands: Commands, mut message_reader: MessageReader<PieceRemoved>) {
+    for piece_removed in message_reader.read() {
+        commands.entity(piece_removed.entity).despawn();
+    }
+}
+
+#[derive(Message)]
+pub struct PieceMoved {
+    piece: Entity,
+    origin: Vec2,
+    target_cell: BoardCell,
+}
+
+#[derive(Component)]
+pub struct PieceMoveAnimation {
+    origin: Vec2,
+    target_cell: BoardCell,
+    elapsed: f32,
+    duration: f32,
+}
+
+fn start_piece_animation(mut commands: Commands, mut message_reader: MessageReader<PieceMoved>) {
+    for piece_moved in message_reader.read() {
+        commands
+            .entity(piece_moved.piece)
+            .insert(PieceMoveAnimation {
+                origin: piece_moved.origin,
+                target_cell: piece_moved.target_cell.clone(),
+                elapsed: 0.0,
+                duration: 0.3,
+            });
+    }
+}
+
+fn animate_piece(
+    mut commands: Commands,
+    board_visual_information: Res<BoardVisualInformation>,
+    animated_pieces: Query<(Entity, &mut PieceMoveAnimation, &mut Transform)>,
+    time: Res<Time>,
+) {
+    let time_delta = time.delta_secs();
+
+    for (piece_entity, mut move_animation, mut transform) in animated_pieces {
+        let target = board_visual_information.cell_position(&move_animation.target_cell);
+
+        move_animation.elapsed = (move_animation.elapsed + time_delta).min(move_animation.duration);
+
+        let translation = move_animation.origin
+            + (target - move_animation.origin) * (move_animation.elapsed / move_animation.duration);
+
+        transform.translation = translation.extend(transform.translation.z);
+
+        if move_animation.elapsed == move_animation.duration {
+            commands.entity(piece_entity).remove::<PieceMoveAnimation>();
+        }
     }
 }
 
@@ -164,15 +300,31 @@ pub struct ChessGameEngine {
     moves: Vec<MoveInfo>,
 }
 
+#[derive(Debug, derive_more::Display)]
+#[display("{message}: {kind}")]
 pub struct MoveError {
     pub kind: MoveErrorKind,
     pub message: String,
 }
 
+#[derive(Debug, derive_more::Display)]
 pub enum MoveErrorKind {
-    MissingPieceAtOrigin,
-    MissingPieceAtTarget,
+    #[display("The piece is missing at {origin_cell}")]
+    MissingPieceAtOrigin { origin_cell: BoardCell },
+    #[display("The piece is missing at {target_cell}")]
+    MissingPieceAtTarget { target_cell: BoardCell },
+    #[display("The piece is the moving on at {origin_cell}")]
+    TryCaptureOriginPiece { origin_cell: BoardCell },
+    #[display(
+        "The target cell is out of bounds of the board. Origin cell is at {origin_cell} and the vector is {vector}"
+    )]
+    OutOfBounds {
+        origin_cell: BoardCell,
+        vector: Vector,
+    },
 }
+
+impl std::error::Error for MoveError {}
 
 impl ChessGameEngine {
     pub fn make_move(
@@ -184,7 +336,9 @@ impl ChessGameEngine {
 
         let Square::Occupied(piece) = self.board[origin_cell].clone() else {
             return Err(MoveError {
-                kind: MoveErrorKind::MissingPieceAtOrigin,
+                kind: MoveErrorKind::MissingPieceAtOrigin {
+                    origin_cell: origin_cell.clone(),
+                },
                 message: "To make a move, the piece should exist at origin cell".to_string(),
             });
         };
@@ -192,12 +346,41 @@ impl ChessGameEngine {
         if let Some(capture_behavior) = &candidate_move.capture {
             match capture_behavior {
                 pieces::CaptureBehavior::DoNothing => (),
-                pieces::CaptureBehavior::RemovePiece => {
-                    let Square::Occupied(target_piece) =
-                        self.board[&candidate_move.target_square].take()
-                    else {
+                pieces::CaptureBehavior::RemovePiece(target) => {
+                    let target_cell = match target {
+                        pieces::Square::Origin => return Err(MoveError {
+                            kind: MoveErrorKind::TryCaptureOriginPiece { origin_cell: origin_cell.clone() },
+                            message: "Tried to remove the moving piece, and it's forbidden in the chess game engine".to_string(),
+                        }),
+                        pieces::Square::Target => candidate_move.target_square.clone(),
+                        pieces::Square::Explicit(board_cell) => {
+                            if board_cell == origin_cell {
+                                return Err(MoveError {
+                                    kind: MoveErrorKind::TryCaptureOriginPiece { origin_cell: origin_cell.clone() },
+                                    message: "Tried to remove the moving piece, and it's forbidden in the chess game engine".to_string(),
+                                });
+                            }
+
+                            board_cell.clone()
+                        },
+                        pieces::Square::OffsetFromOrigin(vector) => {
+                            let row = origin_cell.row.clone() + vector.y();
+                            let col = origin_cell.col.clone() + vector.x();
+
+                            let (Some(row), Some(col)) = (row, col) else {
+                                return Err(MoveError {
+                                    kind: MoveErrorKind::OutOfBounds { origin_cell: origin_cell.clone(), vector:*vector},
+                                    message: "Tried to get the cell that is out of bounds of the board".to_string()
+                                });
+                            };
+
+                            BoardCell { col, row }
+                        },
+                    };
+
+                    let Square::Occupied(target_piece) = self.board[&target_cell].take() else {
                         return Err(MoveError {
-                            kind: MoveErrorKind::MissingPieceAtTarget,
+                            kind: MoveErrorKind::MissingPieceAtTarget { target_cell },
                             message: "The target piece should be exist at target cell to capture"
                                 .to_string(),
                         });
@@ -205,7 +388,7 @@ impl ChessGameEngine {
 
                     changes.push(ChessGameChange::PieceRemoved {
                         piece: target_piece,
-                        from: candidate_move.target_square.clone(),
+                        from: target_cell
                     })
                 }
             }
@@ -289,6 +472,7 @@ impl ChessGameEngine {
         Ok(move_info)
     }
 
+    // TODO: restore the move information for visual board representation
     pub fn unmake_move(&mut self) {
         let Some(move_info) = self.moves.pop() else {
             return;
@@ -330,16 +514,92 @@ impl ChessGameEngine {
         }
     }
 
-    fn is_move_legal(&mut self, origin_cell: &BoardCell, candidate_move: &CandidateMove) -> bool {
+    fn is_move_legal(
+        &mut self,
+        origin_cell: &BoardCell,
+        candidate_move: &CandidateMove,
+        piece_storage: &ChessPieceStorage,
+        chess_piece_assets: &Assets<ChessPieceAsset>,
+    ) -> bool {
         if self.make_move(origin_cell, candidate_move).is_err() {
             return false;
         }
 
-        // TODO: check whether VIPs (very important pieces) are under attack or not.
+        let inactive_color = self.active_color.opposite();
+
+        let important_squares: Vec<_> = self
+            .board
+            .squares()
+            .filter_map(|(cell, square)| match square {
+                Square::Vacant => None,
+                Square::Occupied(chess_piece) => {
+                    let Some(asset) =
+                        piece_storage.load_piece_asset(&chess_piece.name, chess_piece_assets)
+                    else {
+                        warn!("The asset of chess piece is absent!");
+                        return None;
+                    };
+
+                    if chess_piece.color == inactive_color && asset.definition.is_vip {
+                        Some(cell)
+                    } else {
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        let attacking_pieces: Vec<_> = self
+            .board
+            .squares()
+            .filter_map(|(cell, square)| match square {
+                Square::Vacant => None,
+                Square::Occupied(chess_piece) => {
+                    if chess_piece.color == self.active_color {
+                        Some((cell, chess_piece))
+                    } else {
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        let is_illegal = attacking_pieces
+            .into_iter()
+            .any(|(origin_cell, chess_piece)| {
+                let Some(asset) =
+                    piece_storage.load_piece_asset(&chess_piece.name, chess_piece_assets)
+                else {
+                    warn!("The asset of chess piece is absent!");
+                    return false;
+                };
+
+                asset
+                    .definition
+                    .movement_rules
+                    .iter()
+                    .flat_map(|movement_rule| {
+                        movement_rule.generate_candidate_squares(&origin_cell, chess_piece, self)
+                    })
+                    .any(|candidate_move| {
+                        important_squares.contains(&candidate_move.target_square)
+                            && candidate_move
+                                .capture
+                                .as_ref()
+                                .is_some_and(|capture_behavior| {
+                                    // TODO: the remove piece is actually not the same as square
+                                    // (for instance, the en passant takes another square)
+                                    matches!(
+                                        capture_behavior,
+                                        pieces::CaptureBehavior::RemovePiece(_)
+                                    )
+                                })
+                    })
+            });
 
         self.unmake_move();
 
-        true
+        !is_illegal
     }
 
     pub fn generate_legal_moves(
@@ -366,7 +626,9 @@ impl ChessGameEngine {
 
         candidates
             .into_iter()
-            .filter(|candidate_move| self.is_move_legal(&cell, candidate_move))
+            .filter(|candidate_move| {
+                self.is_move_legal(&cell, candidate_move, piece_storage, chess_piece_assets)
+            })
             .collect()
     }
 }
@@ -414,12 +676,12 @@ impl From<InitialGameInformation> for ChessGameEngine {
 
             states.insert(
                 side(StateName::en_passant_target_square()),
-                en_passant_info.target_square.to_string(),
+                format!("square:{}", en_passant_info.target_square),
             );
 
             states.insert(
                 side(StateName::en_passant_capture_piece()),
-                en_passant_info.capture_piece.to_string(),
+                format!("square:{}", en_passant_info.capture_piece),
             );
         }
 
@@ -607,6 +869,13 @@ impl ChessBoard {
     fn get_index_by(board_cell: &BoardCell) -> usize {
         Self::CELLS_IN_ROW * board_cell.row.as_index() + board_cell.col.as_index()
     }
+
+    fn squares(&self) -> impl Iterator<Item = (BoardCell, &Square)> {
+        SquareIterator {
+            index: 0,
+            cells: &self.cells,
+        }
+    }
 }
 
 impl std::ops::Index<&BoardCell> for ChessBoard {
@@ -622,12 +891,40 @@ impl std::ops::IndexMut<&BoardCell> for ChessBoard {
     }
 }
 
+struct SquareIterator<'a> {
+    index: usize,
+    cells: &'a [Square; 64],
+}
+
+impl<'a> Iterator for SquareIterator<'a> {
+    type Item = (BoardCell, &'a Square);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index == self.cells.len() {
+            return None;
+        }
+
+        let row_index = self.index / ChessBoard::CELLS_IN_ROW;
+        let col_index = self.index - ChessBoard::CELLS_IN_ROW * row_index;
+
+        let row = Row::try_from((b'8' - row_index as u8) as char).expect("The row is invalid");
+        let col =
+            Column::try_from((b'a' + col_index as u8) as char).expect("The column is invalid");
+
+        let iter_element = (BoardCell { col, row }, &self.cells[self.index]);
+
+        self.index += 1;
+
+        Some(iter_element)
+    }
+}
+
 /// This enumeration represents the board square and answers, whether
 /// the square is occupied or vacant.
 ///
 /// Although it's possible to use with [`Option<T>`], but it's not the
 /// chess's conventional way.
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 enum Square {
     #[default]
     Vacant,
@@ -665,12 +962,12 @@ impl From<&HashMap<BoardCell, ChessPiece>> for ChessBoard {
 }
 
 #[derive(Clone)]
-struct MoveInfo {
-    changes: Vec<ChessGameChange>,
+pub struct MoveInfo {
+    pub changes: Vec<ChessGameChange>,
 }
 
 #[derive(Clone)]
-enum ChessGameChange {
+pub enum ChessGameChange {
     PieceMoved {
         from: BoardCell,
         to: BoardCell,
@@ -679,8 +976,11 @@ enum ChessGameChange {
         piece: ChessPiece,
         from: BoardCell,
     },
+    #[allow(unused)]
     AddedState {
         state_key: Side<StateName>,
+        // I doubt that the state value is needed, but
+        // I'll leave it for an obscure case.
         state_value: StateValue,
     },
     RemovedState {

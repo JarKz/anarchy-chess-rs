@@ -1,11 +1,62 @@
 ChessPieceDefinition(
-  short_name: "B",
-  full_name: "Bishop",
+    short_name: "B",
+    full_name: "Bishop",
 
-  movement_rules: [],
+    is_vip: false,
 
-  images: ChessPieceImages(
-    white: "white_bishop.svg",
-    black: "black_bishop.svg"
-  )
+    movement_rules: [
+        MovementRule(
+            conditions: [],
+            on_obstruction: ObstructionBehavior(
+                on_ally: [
+                    Discard,
+                ],
+                on_enemy: [
+                    Capture,
+                    Stop,
+                ],
+                on_empty: [
+                    Continue,
+                ],
+            ),
+            on_capture: RemovePiece(Target),
+            generators: [
+                Vector(
+                    direction: (
+                        1,
+                        -1,
+                    ),
+                    max_distance: Infinite,
+                ),
+                Vector(
+                    direction: (
+                        1,
+                        1,
+                    ),
+                    max_distance: Infinite,
+                ),
+                Vector(
+                    direction: (
+                        -1,
+                        1,
+                    ),
+                    max_distance: Infinite,
+                ),
+                Vector(
+                    direction: (
+                        -1,
+                        -1,
+                    ),
+                    max_distance: Infinite,
+                ),
+            ],
+            actions: [
+                MoveSelf,
+            ],
+        ),
+    ],
+    images: ChessPieceImages(
+        white: "white_bishop.svg",
+        black: "black_bishop.svg",
+    ),
 )
