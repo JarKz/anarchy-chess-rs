@@ -374,7 +374,15 @@ impl ChessGameEngine {
                                 });
                             };
 
-                            BoardCell { col, row }
+                            let target_cell = BoardCell { col, row };
+                            if &target_cell == origin_cell {
+                                return Err(MoveError {
+                                    kind: MoveErrorKind::TryCaptureOriginPiece { origin_cell: origin_cell.clone() },
+                                    message: "Tried to remove the moving piece, and it's forbidden in the chess game engine".to_string(),
+                                });
+                            }
+
+                            target_cell
                         },
                     };
 

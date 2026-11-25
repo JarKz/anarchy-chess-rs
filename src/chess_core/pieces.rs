@@ -593,7 +593,7 @@ impl Square {
         _chess_game_engine: &ChessGameEngine,
     ) -> String {
         match self {
-            Square::Origin => format!("suqare:{}", condition_check_context.origin_cell),
+            Square::Origin => format!("square:{}", condition_check_context.origin_cell),
             Square::Target => format!("square:{}", condition_check_context.target_cell),
             Square::Explicit(board_cell) => format!("square:{board_cell}"),
             Square::OffsetFromOrigin(vector) => {
