@@ -1,8 +1,11 @@
-use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy::{
+    ecs::{query::QueryData, system::SystemParam},
+    prelude::*,
+};
 
 use crate::chess_core::{
-    BOARD_MARKS_Z, BoardAndPieces, ChessGameEngine, DRAGGING_PIECE_Z, PIECE_Z, PieceMoved,
-    PieceRemoved, Square,
+    BOARD_MARKS_Z, BoardAndPieces, ChessGameEngine, DRAGGING_PIECE_Z, OUTLINE_MARK_Z, PIECE_Z,
+    PieceMoved, PieceRemoved, Square,
     board::{BoardCell, BoardVisualInformation, CellPosition},
     pieces::CandidateMove,
 };
@@ -19,7 +22,10 @@ impl Plugin for PointerInteractionPlugin {
             )
             .add_systems(
                 Update,
-                resize_outline_marker.run_if(resource_changed::<BoardVisualInformation>),
+                (
+                    resize_outline_marker.run_if(resource_changed::<BoardVisualInformation>),
+                    action_mark_appearance,
+                ),
             )
             .add_systems(
                 PostUpdate,
@@ -35,6 +41,7 @@ impl Plugin for PointerInteractionPlugin {
 #[derive(Resource)]
 struct InteractionMaterials {
     action_circle: Handle<Mesh>,
+    action_ring: Handle<Mesh>,
     action_color: Handle<ColorMaterial>,
 
     outline_square: Handle<Mesh>,
@@ -47,7 +54,8 @@ pub fn initialize_materials(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     commands.insert_resource(InteractionMaterials {
-        action_circle: meshes.add(Circle::new(1.0)),
+        action_circle: meshes.add(Circle::new(0.5)),
+        action_ring: meshes.add(Circle::new(0.5).to_ring(0.08)),
         action_color: materials.add(Color::srgba(0.5, 0.5, 0.5, 0.6)),
 
         outline_square: meshes.add(Rectangle::new(1.0, 1.0).to_ring(0.04)),
@@ -71,7 +79,7 @@ fn initialize_outline_marker(
         CellOutlineMarker,
         Mesh2d(interaction_materials.outline_square.clone()),
         MeshMaterial2d(interaction_materials.outline_color.clone()),
-        Transform::from_xyz(0.0, 0.0, BOARD_MARKS_Z),
+        Transform::from_xyz(0.0, 0.0, OUTLINE_MARK_Z),
         Visibility::Hidden,
     ));
 }
@@ -115,7 +123,7 @@ pub enum PointerInteraction {
 
         origin_cell: BoardCell,
         candidates: Vec<CandidateMove>,
-        handles: Vec<Entity>,
+        action_marks: Vec<(Entity, f32)>,
     },
 }
 
@@ -123,9 +131,14 @@ impl PointerInteraction {
     fn reset_to_idle(&mut self, commands: &mut Commands) {
         match self {
             PointerInteraction::Idle => (),
-            PointerInteraction::WaitingMove { handles, .. } => {
-                handles.iter().for_each(|handle| {
-                    commands.entity(*handle).despawn();
+            PointerInteraction::WaitingMove { action_marks, .. } => {
+                action_marks.iter().for_each(|&(action_mark, scale)| {
+                    commands.entity(action_mark).insert(ActionMarkAppearance {
+                        scale,
+                        duration: 0.08,
+                        elapsed: 0.0,
+                        direction: AnimationDirection::Exit,
+                    });
                 });
                 *self = PointerInteraction::Idle;
             }
@@ -199,6 +212,14 @@ fn outline_square_on_hover(
     cell_hover.cell = Some(cell);
 }
 
+#[derive(QueryData)]
+#[query_data(mutable)]
+struct DraggingPieceData {
+    entity: Entity,
+    cell: &'static BoardCell,
+    transform: &'static mut Transform,
+}
+
 fn handle_mouse_interaction(
     commands: Commands,
     input: Input,
@@ -209,7 +230,7 @@ fn handle_mouse_interaction(
     board_and_pieces: BoardAndPieces,
     chess_game_engine: ResMut<ChessGameEngine>,
 
-    dragging_piece_query: Query<(&BoardCell, &mut Transform), With<DraggingPiece>>,
+    dragging_piece_query: Query<DraggingPieceData, With<DraggingPiece>>,
 ) {
     if input.buttons.just_pressed(MouseButton::Left) {
         on_piece_drag(
@@ -257,7 +278,7 @@ fn on_piece_drag(
         PointerInteraction::WaitingMove {
             origin_cell,
             candidates,
-            handles,
+            action_marks,
             ..
         } if *origin_cell != selected_cell => {
             // TODO: better to use filter and figure out whether this is a single move or multiple moves
@@ -280,7 +301,6 @@ fn on_piece_drag(
             }
 
             input.pointer_interaction.reset_to_idle(&mut commands);
-            return;
         }
         _ => (),
     }
@@ -306,7 +326,7 @@ fn on_piece_drag(
                 &board_and_pieces.chess_piece_assets,
             );
 
-            let handles = spawn_action_circles(
+            let action_marks = spawn_action_marks(
                 &mut commands,
                 &board_and_pieces,
                 &interaction_materials,
@@ -318,7 +338,7 @@ fn on_piece_drag(
                 has_released: false,
                 origin_cell: selected_cell,
                 candidates,
-                handles,
+                action_marks,
             };
         }
         PointerInteraction::WaitingMove { has_released, .. } => {
@@ -335,7 +355,7 @@ fn on_piece_release(
     mut board_and_pieces: BoardAndPieces,
     mut chess_game_engine: ResMut<ChessGameEngine>,
 
-    mut dragging_piece_query: Query<(&BoardCell, &mut Transform), With<DraggingPiece>>,
+    mut dragging_piece_query: Query<DraggingPieceData, With<DraggingPiece>>,
 ) {
     let PointerInteraction::WaitingMove {
         selected_piece,
@@ -347,7 +367,7 @@ fn on_piece_release(
         return;
     };
 
-    let Ok((origin_cell, mut transform)) = dragging_piece_query.get_mut(*selected_piece) else {
+    let Ok(mut dragging_piece_data) = dragging_piece_query.get_mut(*selected_piece) else {
         return;
     };
 
@@ -365,9 +385,7 @@ fn on_piece_release(
     else {
         return_dragging_piece(
             &mut commands,
-            *selected_piece,
-            origin_cell,
-            &mut transform,
+            &mut dragging_piece_data,
             &board_and_pieces.board,
         );
         input.pointer_interaction.reset_to_idle(&mut commands);
@@ -381,17 +399,17 @@ fn on_piece_release(
     {
         Some(candidate) => {
             let move_info = chess_game_engine
-                .make_move(origin_cell, candidate)
+                .make_move(dragging_piece_data.cell, candidate)
                 .expect("The move is legal");
 
             commands.entity(*selected_piece).remove::<DraggingPiece>();
-            transform.translation.z = PIECE_Z;
+            dragging_piece_data.transform.translation.z = PIECE_Z;
 
             board_and_pieces.visual_board.process_moves(
                 move_info,
                 &board_and_pieces.board,
-                origin_cell,
-                transform.translation.xy(),
+                dragging_piece_data.cell,
+                dragging_piece_data.transform.translation.xy(),
                 &mut message_broker,
                 &mut commands,
             );
@@ -401,13 +419,11 @@ fn on_piece_release(
         None => {
             return_dragging_piece(
                 &mut commands,
-                *selected_piece,
-                origin_cell,
-                &mut transform,
+                &mut dragging_piece_data,
                 &board_and_pieces.board,
             );
 
-            if *has_released && *origin_cell == selected_cell {
+            if *has_released && *dragging_piece_data.cell == selected_cell {
                 input.pointer_interaction.reset_to_idle(&mut commands);
             } else {
                 input.pointer_interaction.release_piece();
@@ -416,27 +432,25 @@ fn on_piece_release(
     }
 }
 
-pub fn move_dragging_piece(
+fn move_dragging_piece(
     mut commands: Commands,
     mut input: Input,
     board_visual_information: Res<BoardVisualInformation>,
-    dragging_piece: Single<(Entity, &BoardCell, &mut Transform), With<DraggingPiece>>,
+    dragging_piece: Single<DraggingPieceData, With<DraggingPiece>>,
 ) {
     if !input.buttons.pressed(MouseButton::Left) {
         return;
     }
 
     let (camera, camera_transform) = input.camera.into_inner();
-    let (piece, board_cell, mut transform) = dragging_piece.into_inner();
+    let mut dragging_piece_data = dragging_piece.into_inner();
 
     let cursor_position = match input.window.cursor_position() {
         Some(position) => position,
         None => {
             return_dragging_piece(
                 &mut commands,
-                piece,
-                board_cell,
-                &mut transform,
+                &mut dragging_piece_data,
                 &board_visual_information,
             );
             input.pointer_interaction.release_piece();
@@ -448,49 +462,117 @@ pub fn move_dragging_piece(
         return;
     };
 
-    transform.translation = world_position.extend(DRAGGING_PIECE_Z);
+    dragging_piece_data.transform.translation = world_position.extend(DRAGGING_PIECE_Z);
 }
 
 /// Returns the dragging piece to its intial position and removes the dragging status (component).
 ///
 /// In fact, it has a small intersection with [`PointerInteraction`], but they solves different
 /// problems. Therefore the [`PointerInteraction`] cannot manage entity's information.
-pub fn return_dragging_piece(
+fn return_dragging_piece(
     commands: &mut Commands,
-    piece: Entity,
-    board_cell: &BoardCell,
-    transform: &mut Transform,
+    dragging_piece_data: &mut DraggingPieceDataItem,
     board_visual_information: &BoardVisualInformation,
 ) {
-    commands.entity(piece).remove::<DraggingPiece>();
+    commands
+        .entity(dragging_piece_data.entity)
+        .remove::<DraggingPiece>();
 
-    transform.translation = board_visual_information
-        .cell_position(board_cell)
+    dragging_piece_data.transform.translation = board_visual_information
+        .cell_position(dragging_piece_data.cell)
         .extend(PIECE_Z);
 }
 
-fn spawn_action_circles(
+#[derive(Component)]
+struct ActionMarkAppearance {
+    scale: f32,
+    duration: f32,
+    elapsed: f32,
+    direction: AnimationDirection,
+}
+
+enum AnimationDirection {
+    Enter,
+    Exit,
+}
+
+fn spawn_action_marks(
     commands: &mut Commands,
     board_and_pieces: &BoardAndPieces,
     interaction_materials: &InteractionMaterials,
     candidates: &[CandidateMove],
-) -> Vec<Entity> {
+) -> Vec<(Entity, f32)> {
+    let cell_size = board_and_pieces.board.cell_size();
+
     candidates
         .iter()
         .map(|candidate_move| {
-            commands
-                .spawn((
+            let (mesh, scale) = if board_and_pieces
+                .visual_board
+                .pieces
+                .get(&candidate_move.target_square)
+                .is_some()
+            {
+                (Mesh2d(interaction_materials.action_ring.clone()), cell_size)
+            } else {
+                (
                     Mesh2d(interaction_materials.action_circle.clone()),
-                    MeshMaterial2d(interaction_materials.action_color.clone()),
-                    Transform::from_translation(
-                        board_and_pieces
-                            .board
-                            .cell_position(&candidate_move.target_square)
-                            .extend(BOARD_MARKS_Z),
-                    )
-                    .with_scale(Vec3::splat(board_and_pieces.board.cell_size() * 0.15)),
-                ))
-                .id()
+                    cell_size * 0.3,
+                )
+            };
+
+            (
+                commands
+                    .spawn((
+                        mesh,
+                        MeshMaterial2d(interaction_materials.action_color.clone()),
+                        Transform::from_translation(
+                            board_and_pieces
+                                .board
+                                .cell_position(&candidate_move.target_square)
+                                .extend(BOARD_MARKS_Z),
+                        ),
+                        ActionMarkAppearance {
+                            scale,
+                            duration: 0.08,
+                            elapsed: 0.0,
+                            direction: AnimationDirection::Enter,
+                        },
+                    ))
+                    .id(),
+                scale,
+            )
         })
         .collect()
+}
+
+fn action_mark_appearance(
+    mut commands: Commands,
+    marks: Query<(Entity, &mut ActionMarkAppearance, &mut Transform)>,
+    time: Res<Time>,
+) {
+    let delta_secs = time.delta_secs();
+
+    for (mark_entity, mut animation_info, mut transform) in marks {
+        animation_info.elapsed = (animation_info.elapsed + delta_secs).min(animation_info.duration);
+
+        let mut progress = animation_info.elapsed / animation_info.duration;
+
+        if matches!(animation_info.direction, AnimationDirection::Exit) {
+            progress = 1.0 - progress;
+        }
+
+        transform.scale = Vec3::splat(progress * animation_info.scale);
+
+        if animation_info.elapsed == animation_info.duration {
+            match animation_info.direction {
+                AnimationDirection::Enter => {
+                    commands
+                        .entity(mark_entity)
+                        .remove::<ActionMarkAppearance>();
+                }
+                AnimationDirection::Exit => commands.entity(mark_entity).despawn(),
+            }
+        }
+    }
 }

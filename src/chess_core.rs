@@ -28,8 +28,9 @@ pub mod pointer_interaction;
 
 const BOARD_Z: f32 = 0.0;
 const BOARD_MARKS_Z: f32 = 0.1;
-const PIECE_Z: f32 = 0.2;
-const DRAGGING_PIECE_Z: f32 = 0.3;
+const OUTLINE_MARK_Z: f32 = 0.2;
+const PIECE_Z: f32 = 0.3;
+const DRAGGING_PIECE_Z: f32 = 0.4;
 
 pub struct ChessCorePlugin {}
 
