@@ -2,7 +2,7 @@ use bevy::{platform::collections::HashMap, prelude::*, sprite::Anchor, window::W
 use derive_more::Display;
 use serde::Deserialize;
 
-use crate::chess_core::{BOARD_Z, VisualChessBoard};
+use crate::chess_core::{BOARD_Z, BoardEntities};
 
 /// The pluign of the chess board.
 ///
@@ -12,13 +12,12 @@ pub struct ChessBoardPlugin;
 
 impl Plugin for ChessBoardPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BoardVisualInformation>()
+        app.init_resource::<BoardGeometry>()
             .add_systems(Startup, create_board)
             .add_systems(Update, on_window_resize)
             .add_systems(
                 Update,
-                (resize_board, reposition_labels)
-                    .run_if(resource_changed::<BoardVisualInformation>),
+                (resize_board, reposition_labels).run_if(resource_changed::<BoardGeometry>),
             );
     }
 }
@@ -29,7 +28,7 @@ impl Plugin for ChessBoardPlugin {
 /// [BoardVisualInformation]).
 fn on_window_resize(
     mut resize_reader: MessageReader<WindowResized>,
-    mut board_settings: ResMut<BoardVisualInformation>,
+    mut board_settings: ResMut<BoardGeometry>,
 ) {
     for event in resize_reader.read() {
         board_settings.window_size = UVec2::new(event.width as u32, event.height as u32);
@@ -38,15 +37,15 @@ fn on_window_resize(
 
 /// Resizes the chess board after changing the dimension of [`BoardVisualInformation`].
 fn resize_board(
-    board_visual_information: Res<BoardVisualInformation>,
+    board_geometry: Res<BoardGeometry>,
     board_query: Query<(&BoardCell, &mut Transform), With<BoardSquare>>,
 ) {
-    let cell_size = board_visual_information.cell_size();
+    let cell_size = board_geometry.cell_size();
 
     for (cell, mut transform) in board_query {
         transform.scale = Vec3::splat(cell_size);
 
-        transform.translation = board_visual_information
+        transform.translation = board_geometry
             .cell_position(cell)
             .extend(transform.translation.z);
     }
@@ -54,12 +53,11 @@ fn resize_board(
 
 /// Correctly positions board labels after the board visual information change.
 fn reposition_labels(
-    board_visual_information: Res<BoardVisualInformation>,
+    board_geometry: Res<BoardGeometry>,
     label_query: Query<(&Label, &mut Transform)>,
 ) {
     for (label, mut transform) in label_query {
-        let label_position =
-            board_visual_information.label_position(label, &board_visual_information.orientation);
+        let label_position = board_geometry.label_position(label, &board_geometry.orientation);
 
         transform.translation.x = label_position.0;
         transform.translation.y = label_position.1;
@@ -306,7 +304,7 @@ impl TryFrom<char> for Column {
 /// can be positioned correctly using [BoardCell] which denotes an unique
 /// square on the board instead of simple indexing.
 #[derive(Resource)]
-pub struct BoardVisualInformation {
+pub struct BoardGeometry {
     window_size: UVec2,
 
     min_board_size: u32,
@@ -315,7 +313,7 @@ pub struct BoardVisualInformation {
     pub orientation: BoardOrientation,
 }
 
-impl Default for BoardVisualInformation {
+impl Default for BoardGeometry {
     fn default() -> Self {
         Self {
             window_size: (1280, 720).into(),
@@ -334,7 +332,7 @@ pub enum BoardOrientation {
     BlackSide,
 }
 
-impl BoardVisualInformation {
+impl BoardGeometry {
     const CELLS_IN_ROW: f32 = 8.0;
     const LABEL_PADDING: f32 = 30.0;
 
@@ -474,7 +472,7 @@ pub trait CellPosition<T> {
     fn cell_position(&self, key: T) -> Vec2;
 }
 
-impl CellPosition<(u32, u32)> for BoardVisualInformation {
+impl CellPosition<(u32, u32)> for BoardGeometry {
     fn cell_position(&self, (row, col): (u32, u32)) -> Vec2 {
         let board_size = self.board_size();
         let cell_size = self.cell_size();
@@ -491,7 +489,7 @@ impl CellPosition<(u32, u32)> for BoardVisualInformation {
     }
 }
 
-impl CellPosition<&BoardCell> for BoardVisualInformation {
+impl CellPosition<&BoardCell> for BoardGeometry {
     fn cell_position(&self, cell: &BoardCell) -> Vec2 {
         self.cell_position(self.cell_index(cell))
     }
@@ -538,14 +536,14 @@ impl CellMaterials {
 fn create_board(
     mut commands: Commands,
     window: Single<&Window>,
-    mut chess_board: ResMut<VisualChessBoard>,
-    mut board_visual_information: ResMut<BoardVisualInformation>,
+    mut chess_board: ResMut<BoardEntities>,
+    mut board_geometry: ResMut<BoardGeometry>,
 ) {
     let board_materials = BoardMaterials::new();
-    board_visual_information.window_size = window.physical_size();
+    board_geometry.window_size = window.physical_size();
 
-    chess_board.labels = create_labels(&mut commands, &board_visual_information);
-    chess_board.cells = create_cells(&mut commands, &board_visual_information, &board_materials);
+    chess_board.labels = create_labels(&mut commands, &board_geometry);
+    chess_board.cells = create_cells(&mut commands, &board_geometry, &board_materials);
 
     commands.insert_resource(board_materials);
 }
@@ -553,7 +551,7 @@ fn create_board(
 /// Creates labels for the board using the board visual information to correctly place them.
 fn create_labels(
     commands: &mut Commands,
-    board_visual_information: &BoardVisualInformation,
+    board_geometry: &BoardGeometry,
 ) -> HashMap<Label, Entity> {
     let mut labels = HashMap::new();
 
@@ -561,8 +559,7 @@ fn create_labels(
         .map(|symbol| Label::Row(Row(symbol)))
         .chain(Column::DEFAULT_RANGE.map(|symbol| Label::Column(Column(symbol))))
     {
-        let label_position =
-            board_visual_information.label_position(&label, &board_visual_information.orientation);
+        let label_position = board_geometry.label_position(&label, &board_geometry.orientation);
 
         let label_entity = commands.spawn((
             label.clone(),
@@ -584,17 +581,17 @@ fn create_labels(
 /// Creates board cells for the board using the board visual information to correctly place them.
 fn create_cells(
     commands: &mut Commands,
-    board_visual_information: &BoardVisualInformation,
+    board_geometry: &BoardGeometry,
     board_materials: &BoardMaterials,
 ) -> HashMap<BoardCell, Entity> {
     let mut cells = HashMap::new();
-    let cell_size = board_visual_information.cell_size();
+    let cell_size = board_geometry.cell_size();
 
     for row in 0..8 {
         for col in 0..8 {
             let is_white = (-1i32).pow(row + col).is_positive();
-            let board_cell = board_visual_information.cell_name(row, col);
-            let cell_position = board_visual_information.cell_position((row, col));
+            let board_cell = board_geometry.cell_name(row, col);
+            let cell_position = board_geometry.cell_position((row, col));
 
             let entity = commands.spawn((
                 BoardSquare,

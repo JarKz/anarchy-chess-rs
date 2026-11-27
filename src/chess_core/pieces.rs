@@ -282,6 +282,7 @@ impl MovementRule {
     }
 }
 
+#[derive(Clone)]
 pub struct CandidateMove {
     pub target_square: BoardCell,
     pub actions: Vec<Action>,

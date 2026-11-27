@@ -10,8 +10,7 @@ use serde::Deserialize;
 use crate::{
     chess_core::{
         board::{
-            AsIndex, BoardCell, BoardVisualInformation, CellPosition, ChessBoardPlugin, Column,
-            Label, Row,
+            AsIndex, BoardCell, BoardGeometry, CellPosition, ChessBoardPlugin, Column, Label, Row,
         },
         pieces::{
             CandidateMove, ChessPiece, ChessPieceAsset, ChessPieceColor, ChessPieceStorage,
@@ -36,7 +35,7 @@ pub struct ChessCorePlugin {}
 
 impl Plugin for ChessCorePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VisualChessBoard>()
+        app.init_resource::<BoardEntities>()
             .init_resource::<ChessGameEngine>()
             .add_message::<PieceRemoved>()
             .add_message::<PieceMoved>()
@@ -47,24 +46,24 @@ impl Plugin for ChessCorePlugin {
             .add_systems(Update, initial_resize_pieces)
             .add_systems(
                 Update,
-                resize_pieces_on_board_resize.run_if(resource_changed::<BoardVisualInformation>),
+                resize_pieces_on_board_resize.run_if(resource_changed::<BoardGeometry>),
             )
             .add_systems(Update, (remove_piece, start_piece_animation, animate_piece));
     }
 }
 
 #[derive(Resource, Default)]
-struct VisualChessBoard {
+struct BoardEntities {
     labels: HashMap<Label, Entity>,
     cells: HashMap<BoardCell, Entity>,
     pieces: HashMap<BoardCell, Entity>,
 }
 
-impl VisualChessBoard {
+impl BoardEntities {
     fn process_moves(
         &mut self,
         move_info: MoveInfo,
-        board_visual_information: &BoardVisualInformation,
+        board_geometry: &BoardGeometry,
         origin_cell: &BoardCell,
         origin_piece_translation: Vec2,
         piece_message_broker: &mut PieceMessageBroker,
@@ -85,7 +84,7 @@ impl VisualChessBoard {
                         self.move_piece(
                             &from,
                             &to,
-                            board_visual_information.cell_position(&from),
+                            board_geometry.cell_position(&from),
                             &mut piece_message_broker.piece_moved_writer,
                             commands,
                         );
@@ -134,9 +133,9 @@ fn setup_board(
     mut commands: Commands,
 
     mut chess_game_engine: ResMut<ChessGameEngine>,
-    mut visual_chess_board: ResMut<VisualChessBoard>,
+    mut board_entities: ResMut<BoardEntities>,
 
-    mut board_visual_information: ResMut<BoardVisualInformation>,
+    mut board_geometry: ResMut<BoardGeometry>,
     piece_storage: Res<ChessPieceStorage>,
     chess_piece_assets: Res<Assets<ChessPieceAsset>>,
 ) {
@@ -146,15 +145,15 @@ fn setup_board(
                        rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     let initial_game_information = fen::parse(input).unwrap();
 
-    board_visual_information.orientation = initial_game_information.headers.orientation.clone();
+    board_geometry.orientation = initial_game_information.headers.orientation.clone();
 
     for (cell, piece) in &initial_game_information.pieces {
-        let translation = board_visual_information.cell_position(cell);
+        let translation = board_geometry.cell_position(cell);
         let chess_piece_asset = piece_storage
             .load_piece_asset(&piece.name, &chess_piece_assets)
             .unwrap();
 
-        visual_chess_board.pieces.insert(
+        board_entities.pieces.insert(
             cell.clone(),
             commands
                 .spawn((
@@ -176,30 +175,30 @@ fn setup_board(
 /// fix the custom size of the sprite.
 #[allow(clippy::type_complexity)]
 fn initial_resize_pieces(
-    board_visual_information: Res<BoardVisualInformation>,
+    board_geometry: Res<BoardGeometry>,
     pieces: Query<(&BoardCell, &mut Sprite, &mut Transform), (With<ChessPiece>, Added<Sprite>)>,
 ) {
-    resize_pieces(board_visual_information, pieces.into_iter());
+    resize_pieces(board_geometry, pieces.into_iter());
 }
 
 /// The chess board can change its dimensions during window resize. Squares and labels of the board
 /// are changed independently, and chess pieces are changing separately.
 fn resize_pieces_on_board_resize(
-    board_visual_information: Res<BoardVisualInformation>,
+    board_geometry: Res<BoardGeometry>,
     pieces: Query<(&BoardCell, &mut Sprite, &mut Transform), With<ChessPiece>>,
 ) {
-    resize_pieces(board_visual_information, pieces.into_iter());
+    resize_pieces(board_geometry, pieces.into_iter());
 }
 
 /// An convenient menthod that can be applied for both intial resize and rezise after board's resize.
 fn resize_pieces<'a>(
-    board_visual_information: Res<BoardVisualInformation>,
+    board_geometry: Res<BoardGeometry>,
     pieces: impl Iterator<Item = (&'a BoardCell, Mut<'a, Sprite>, Mut<'a, Transform>)>,
 ) {
-    let piece_size = board_visual_information.cell_size();
+    let piece_size = board_geometry.cell_size();
 
     for (cell, mut sprite, mut transform) in pieces {
-        transform.translation = board_visual_information
+        transform.translation = board_geometry
             .cell_position(cell)
             .extend(transform.translation.z);
         sprite.custom_size = Some(Vec2::splat(piece_size));
@@ -247,14 +246,14 @@ fn start_piece_animation(mut commands: Commands, mut message_reader: MessageRead
 
 fn animate_piece(
     mut commands: Commands,
-    board_visual_information: Res<BoardVisualInformation>,
+    board_geometry: Res<BoardGeometry>,
     animated_pieces: Query<(Entity, &mut PieceMoveAnimation, &mut Transform)>,
     time: Res<Time>,
 ) {
     let time_delta = time.delta_secs();
 
     for (piece_entity, mut move_animation, mut transform) in animated_pieces {
-        let target = board_visual_information.cell_position(&move_animation.target_cell);
+        let target = board_geometry.cell_position(&move_animation.target_cell);
 
         move_animation.elapsed = (move_animation.elapsed + time_delta).min(move_animation.duration);
 
@@ -271,8 +270,8 @@ fn animate_piece(
 
 #[derive(SystemParam)]
 struct BoardAndPieces<'w> {
-    board: Res<'w, BoardVisualInformation>,
-    visual_board: ResMut<'w, VisualChessBoard>,
+    geometry: Res<'w, BoardGeometry>,
+    entities: ResMut<'w, BoardEntities>,
     piece_storage: Res<'w, ChessPieceStorage>,
     chess_piece_assets: Res<'w, Assets<ChessPieceAsset>>,
 }
@@ -397,7 +396,7 @@ impl ChessGameEngine {
 
                     changes.push(ChessGameChange::PieceRemoved {
                         piece: target_piece,
-                        from: target_cell
+                        from: target_cell,
                     })
                 }
             }
