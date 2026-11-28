@@ -5,6 +5,7 @@ use bevy_resvg::{
     effects::components::{SvgSize, Unit},
     raster::component::Svg,
 };
+use priority_queue::PriorityQueue;
 use serde::Deserialize;
 
 use crate::{
@@ -294,6 +295,16 @@ pub struct ChessGameEngine {
     /// The total number of full moves, starting from 1. Increments after each move from the black side.
     fullmove_number: NonZeroU32,
 
+    /// The total number of halfmoves, starting from 1. Increments after each move from any side.
+    ///
+    /// Despite having [ChessGameEngine::halfmove_clock], this field was made for different purpose
+    /// — tracking lifetime of states and ensuring correctness among them.
+    ///
+    /// This value is more meaningful than [ChessGameEngine::fullmove_number] for internal work,
+    /// because it's easier to think about moves of both sides together than calculating from the
+    /// fullmove number.
+    halfmove_number: NonZeroU32,
+
     /// The current chess board.
     board: ChessBoard,
 
@@ -347,44 +358,8 @@ impl ChessGameEngine {
             match capture_behavior {
                 pieces::CaptureBehavior::DoNothing => (),
                 pieces::CaptureBehavior::RemovePiece(target) => {
-                    let target_cell = match target {
-                        pieces::Square::Origin => return Err(MoveError {
-                            kind: MoveErrorKind::TryCaptureOriginPiece { origin_cell: origin_cell.clone() },
-                            message: "Tried to remove the moving piece, and it's forbidden in the chess game engine".to_string(),
-                        }),
-                        pieces::Square::Target => candidate_move.target_square.clone(),
-                        pieces::Square::Explicit(board_cell) => {
-                            if board_cell == origin_cell {
-                                return Err(MoveError {
-                                    kind: MoveErrorKind::TryCaptureOriginPiece { origin_cell: origin_cell.clone() },
-                                    message: "Tried to remove the moving piece, and it's forbidden in the chess game engine".to_string(),
-                                });
-                            }
-
-                            board_cell.clone()
-                        },
-                        pieces::Square::OffsetFromOrigin(vector) => {
-                            let row = origin_cell.row.clone() + vector.y();
-                            let col = origin_cell.col.clone() + vector.x();
-
-                            let (Some(row), Some(col)) = (row, col) else {
-                                return Err(MoveError {
-                                    kind: MoveErrorKind::OutOfBounds { origin_cell: origin_cell.clone(), vector:*vector},
-                                    message: "Tried to get the cell that is out of bounds of the board".to_string()
-                                });
-                            };
-
-                            let target_cell = BoardCell { col, row };
-                            if &target_cell == origin_cell {
-                                return Err(MoveError {
-                                    kind: MoveErrorKind::TryCaptureOriginPiece { origin_cell: origin_cell.clone() },
-                                    message: "Tried to remove the moving piece, and it's forbidden in the chess game engine".to_string(),
-                                });
-                            }
-
-                            target_cell
-                        },
-                    };
+                    let target_cell =
+                        self.get_target_square(origin_cell, target, &candidate_move.target_square)?;
 
                     let Square::Occupied(target_piece) = self.board[&target_cell].take() else {
                         return Err(MoveError {
@@ -434,9 +409,9 @@ impl ChessGameEngine {
                         })
                     }
                 }
-                pieces::Action::AddState { name, value } => {
-                    let state_value: StateValue = value
-                        .encode_to_string(
+                pieces::Action::RemoveStateIf { name, conditions } => {
+                    if conditions.iter().all(|condition| {
+                        condition.is_met(
                             pieces::ConditionCheckContext {
                                 piece: &piece,
                                 origin_cell,
@@ -444,7 +419,39 @@ impl ChessGameEngine {
                             },
                             self,
                         )
-                        .into();
+                    }) && let Some(state_value) = self.states.remove(name.clone())
+                    {
+                        changes.push(ChessGameChange::RemovedState {
+                            state_key: name.clone(),
+                            state_value,
+                        })
+                    }
+                }
+                pieces::Action::AddState {
+                    name,
+                    value,
+                    lifetime,
+                } => {
+                    let state_value = StateValue {
+                        value: value
+                            .encode_to_string(
+                                pieces::ConditionCheckContext {
+                                    piece: &piece,
+                                    origin_cell,
+                                    target_cell: &candidate_move.target_square,
+                                },
+                                self,
+                            )
+                            .into_boxed_str(),
+                        lifetime: match lifetime {
+                            pieces::StateLifetimeDeclaration::Eternal => StateLifetime::Eternal,
+                            pieces::StateLifetimeDeclaration::Halfmoves(halfmoves_count) => {
+                                StateLifetime::HalfmoveNumber(
+                                    self.halfmove_number.saturating_add(halfmoves_count.get()),
+                                )
+                            }
+                        },
+                    };
 
                     if let Some(state_value) = self.states.insert(name.clone(), state_value.clone())
                     {
@@ -462,8 +469,29 @@ impl ChessGameEngine {
             }
         }
 
+        while let Some((name, value)) = self.states.peek() {
+            match value.lifetime {
+                StateLifetime::Eternal => break,
+                StateLifetime::HalfmoveNumber(number) => {
+                    if self.halfmove_number >= number {
+                        let state_key = name.clone();
+
+                        if let Some(state_value) = self.states.remove(state_key.clone()) {
+                            changes.push(ChessGameChange::RemovedState {
+                                state_key,
+                                state_value,
+                            })
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
         // TODO: increment halfmove clock
 
+        self.halfmove_number = self.halfmove_number.saturating_add(1);
         match self.active_color {
             ChessPieceColor::Black => {
                 self.fullmove_number = self.fullmove_number.saturating_add(1);
@@ -499,6 +527,10 @@ impl ChessGameEngine {
                         .expect("The number is greater than 1");
                 }
             }
+        }
+        if self.halfmove_number.get() > 1 {
+            self.halfmove_number = NonZeroU32::new(self.halfmove_number.get() - 1)
+                .expect("The number is greater than 1");
         }
 
         for change in move_info.changes.into_iter().rev() {
@@ -590,18 +622,21 @@ impl ChessGameEngine {
                         movement_rule.generate_candidate_squares(&origin_cell, chess_piece, self)
                     })
                     .any(|candidate_move| {
-                        important_squares.contains(&candidate_move.target_square)
-                            && candidate_move
-                                .capture
-                                .as_ref()
-                                .is_some_and(|capture_behavior| {
-                                    // TODO: the remove piece is actually not the same as square
-                                    // (for instance, the en passant takes another square)
-                                    matches!(
-                                        capture_behavior,
-                                        pieces::CaptureBehavior::RemovePiece(_)
+                        candidate_move
+                            .capture
+                            .as_ref()
+                            .is_some_and(|capture_behavior| match capture_behavior {
+                                pieces::CaptureBehavior::DoNothing => false,
+                                pieces::CaptureBehavior::RemovePiece(target) => self
+                                    .get_target_square(
+                                        &origin_cell,
+                                        target,
+                                        &candidate_move.target_square,
                                     )
-                                })
+                                    .is_ok_and(|target_square| {
+                                        important_squares.contains(&target_square)
+                                    }),
+                            })
                     })
             });
 
@@ -639,6 +674,60 @@ impl ChessGameEngine {
             })
             .collect()
     }
+
+    fn get_target_square(
+        &self,
+        origin_cell: &BoardCell,
+        target: &pieces::Square,
+        target_square_of_move: &BoardCell,
+    ) -> Result<BoardCell, MoveError> {
+        Ok(match target {
+            pieces::Square::Origin => return Err(MoveError {
+                kind: MoveErrorKind::TryCaptureOriginPiece {
+                    origin_cell: origin_cell.clone(),
+                },
+                message:
+                    "Tried to remove the moving piece, and it's forbidden in the chess game engine"
+                        .to_string(),
+            }),
+            pieces::Square::Target => target_square_of_move.clone(),
+            pieces::Square::Explicit(board_cell) => {
+                if board_cell == origin_cell {
+                    return Err(MoveError {
+                                    kind: MoveErrorKind::TryCaptureOriginPiece { origin_cell: origin_cell.clone() },
+                                    message: "Tried to remove the moving piece, and it's forbidden in the chess game engine".to_string(),
+                                });
+                }
+
+                board_cell.clone()
+            }
+            pieces::Square::OffsetFromOrigin(vector) => {
+                let row = origin_cell.row.clone() + vector.y();
+                let col = origin_cell.col.clone() + vector.x();
+
+                let (Some(row), Some(col)) = (row, col) else {
+                    return Err(MoveError {
+                        kind: MoveErrorKind::OutOfBounds {
+                            origin_cell: origin_cell.clone(),
+                            vector: *vector,
+                        },
+                        message: "Tried to get the cell that is out of bounds of the board"
+                            .to_string(),
+                    });
+                };
+
+                let target_cell = BoardCell { col, row };
+                if &target_cell == origin_cell {
+                    return Err(MoveError {
+                                    kind: MoveErrorKind::TryCaptureOriginPiece { origin_cell: origin_cell.clone() },
+                                    message: "Tried to remove the moving piece, and it's forbidden in the chess game engine".to_string(),
+                                });
+                }
+
+                target_cell
+            }
+        })
+    }
 }
 
 impl Default for ChessGameEngine {
@@ -650,6 +739,7 @@ impl Default for ChessGameEngine {
             active_color: ChessPieceColor::default(),
             halfmove_clock: 0,
             fullmove_number: NonZeroU32::new(1).unwrap(),
+            halfmove_number: NonZeroU32::new(1).unwrap(),
             board: ChessBoard::default(),
             moves: vec![],
         }
@@ -659,6 +749,16 @@ impl Default for ChessGameEngine {
 impl From<InitialGameInformation> for ChessGameEngine {
     fn from(information: InitialGameInformation) -> Self {
         let mut states = ChessGameStates::default();
+
+        let halfmove_number = NonZeroU32::new(
+            information.fullmove_number.get() * 2
+                - if information.active_color == ChessPieceColor::White {
+                    1
+                } else {
+                    0
+                },
+        )
+        .unwrap();
 
         if information.available_castles.black.king_side {
             states.insert(Side::Black(StateName::kingside_castling()), "true");
@@ -684,12 +784,18 @@ impl From<InitialGameInformation> for ChessGameEngine {
 
             states.insert(
                 side(StateName::en_passant_target_square()),
-                format!("square:{}", en_passant_info.target_square),
+                StateValue {
+                    value: format!("square:{}", en_passant_info.target_square).into_boxed_str(),
+                    lifetime: StateLifetime::HalfmoveNumber(halfmove_number.saturating_add(1)),
+                },
             );
 
             states.insert(
                 side(StateName::en_passant_capture_piece()),
-                format!("square:{}", en_passant_info.capture_piece),
+                StateValue {
+                    value: format!("square:{}", en_passant_info.capture_piece).into_boxed_str(),
+                    lifetime: StateLifetime::HalfmoveNumber(halfmove_number.saturating_add(1)),
+                },
             );
         }
 
@@ -698,6 +804,7 @@ impl From<InitialGameInformation> for ChessGameEngine {
             active_color: information.active_color,
             halfmove_clock: information.halfmove_clock,
             fullmove_number: information.fullmove_number,
+            halfmove_number,
             board: ChessBoard::from(&information.pieces),
             moves: vec![],
         }
@@ -712,7 +819,7 @@ impl From<InitialGameInformation> for ChessGameEngine {
 /// Each state is unique by both its belonging side and name.
 #[derive(Default, Clone)]
 struct ChessGameStates {
-    states: HashMap<Side<StateName>, StateValue>,
+    states: PriorityQueue<Side<StateName>, StateValue>,
 }
 
 impl ChessGameStates {
@@ -720,7 +827,9 @@ impl ChessGameStates {
     where
         SN: Into<StateName>,
     {
-        self.states.get(&key.map(<SN as Into<StateName>>::into))
+        self.states
+            .get(&key.map(<SN as Into<StateName>>::into))
+            .map(|item| item.1)
     }
 
     /// Insterts a new state with provided key and value.
@@ -732,14 +841,20 @@ impl ChessGameStates {
         SV: Into<StateValue>,
     {
         self.states
-            .insert(key.map(<SN as Into<StateName>>::into), value.into())
+            .push(key.map(<SN as Into<StateName>>::into), value.into())
+    }
+
+    pub fn peek(&self) -> Option<(&Side<StateName>, &StateValue)> {
+        self.states.peek()
     }
 
     fn remove<SN>(&mut self, key: Side<SN>) -> Option<StateValue>
     where
         SN: Into<StateName>,
     {
-        self.states.remove(&key.map(<SN as Into<StateName>>::into))
+        self.states
+            .remove(&key.map(<SN as Into<StateName>>::into))
+            .map(|item| item.1)
     }
 }
 
@@ -795,23 +910,72 @@ impl StateName {
 /// To avoid mutability on any level, uses [`Box<str>`].
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
 #[serde(from = "String")]
-pub struct StateValue(Box<str>);
+pub struct StateValue {
+    value: Box<str>,
+    lifetime: StateLifetime,
+}
 
 impl StateValue {
     fn as_str(&self) -> &str {
-        &self.0
+        &self.value
     }
 }
 
 impl From<&str> for StateValue {
     fn from(value: &str) -> Self {
-        Self(value.into())
+        Self {
+            value: value.into(),
+            lifetime: StateLifetime::Eternal,
+        }
     }
 }
 
 impl From<String> for StateValue {
     fn from(value: String) -> Self {
-        Self(value.into_boxed_str())
+        Self {
+            value: value.into_boxed_str(),
+            lifetime: StateLifetime::Eternal,
+        }
+    }
+}
+
+impl Ord for StateValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.lifetime.cmp(&other.lifetime)
+    }
+}
+
+impl PartialOrd for StateValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum StateLifetime {
+    Eternal,
+    HalfmoveNumber(NonZeroU32),
+}
+
+impl Ord for StateLifetime {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let left = match self {
+            StateLifetime::Eternal => u32::MAX,
+            StateLifetime::HalfmoveNumber(number) => number.get(),
+        };
+
+        let right = match other {
+            StateLifetime::Eternal => u32::MAX,
+            StateLifetime::HalfmoveNumber(number) => number.get(),
+        };
+
+        right.cmp(&left)
+    }
+}
+
+impl PartialOrd for StateLifetime {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -995,4 +1159,50 @@ pub enum ChessGameChange {
         state_key: Side<StateName>,
         state_value: StateValue,
     },
+}
+
+#[cfg(test)]
+mod test {
+    use std::num::NonZeroU32;
+
+    use crate::chess_core::{StateLifetime, StateValue};
+
+    #[test]
+    fn state_lifetime_ordering() {
+        let first_state_value = StateValue {
+            value: "hello".into(),
+            lifetime: StateLifetime::Eternal,
+        };
+
+        let second_state_value = StateValue {
+            value: "world".into(),
+            lifetime: StateLifetime::HalfmoveNumber(NonZeroU32::new(28).unwrap()),
+        };
+
+        let third_state_value = StateValue {
+            value: "!".into(),
+            lifetime: StateLifetime::HalfmoveNumber(NonZeroU32::new(30).unwrap()),
+        };
+
+        assert_eq!(
+            second_state_value.cmp(&third_state_value),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            third_state_value.cmp(&first_state_value),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            first_state_value.cmp(&second_state_value),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            first_state_value.cmp(&third_state_value),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            first_state_value.cmp(&first_state_value),
+            std::cmp::Ordering::Equal
+        );
+    }
 }

@@ -185,7 +185,7 @@ pub struct ChessPieceDefinition {
 pub struct MovementRule {
     /// The conditions of the candidate square to which the move
     /// might be performed.
-    pub conditions: Vec<MoveCondition>,
+    pub conditions: Vec<Condition>,
 
     /// The list of move square generators.
     pub generators: Vec<MoveGenerator>,
@@ -293,8 +293,8 @@ pub struct CandidateMove {
 ///
 /// Some of moves can be performed only after if their conditions are met.
 /// Otherwise the move will be discarded and won't be used at current moment.
-#[derive(Debug, Deserialize)]
-pub enum MoveCondition {
+#[derive(Debug, Deserialize, Clone)]
+pub enum Condition {
     /// Verifies whether the value is true.
     ///
     /// There are different ways to verify the value:
@@ -303,7 +303,7 @@ pub enum MoveCondition {
     ///    of the state and checks is the value equal `true`.
     ///  - If the value is arbitrary, the verification is based purely
     ///    on logic, and the result might be not expeted. If you're not
-    ///    sure, then use [`MoveCondition::Equal`] variant which have
+    ///    sure, then use [`Condition::Equal`] variant which have
     ///    more predictable result.
     IsTrue(Value),
 
@@ -322,20 +322,20 @@ pub enum MoveCondition {
     IsEmpty(Value),
 
     /// Negates the inner condition.
-    Not(Box<MoveCondition>),
+    Not(Box<Condition>),
 
     /// Returns true if one of conditions is true.
-    Or(Box<MoveCondition>, Box<MoveCondition>),
+    Or(Box<Condition>, Box<Condition>),
 }
 
-impl MoveCondition {
+impl Condition {
     pub fn is_met(
         &self,
         condition_check_context: ConditionCheckContext,
         chess_game_engine: &ChessGameEngine,
     ) -> bool {
         match self {
-            MoveCondition::IsTrue(value) => match value {
+            Condition::IsTrue(value) => match value {
                 Value::State(state_key) => chess_game_engine
                     .states
                     .get(state_key.clone())
@@ -352,11 +352,11 @@ impl MoveCondition {
                 | Value::SelfColor
                 | Value::Color(_) => false,
             },
-            MoveCondition::Equal(lhs, rhs) => {
+            Condition::Equal(lhs, rhs) => {
                 lhs.encode_to_string(condition_check_context.clone(), chess_game_engine)
                     == rhs.encode_to_string(condition_check_context, chess_game_engine)
             }
-            MoveCondition::IsEmpty(value) => match value {
+            Condition::IsEmpty(value) => match value {
                 Value::State(state_key) => {
                     chess_game_engine.states.get(state_key.clone()).is_none()
                 }
@@ -394,10 +394,10 @@ impl MoveCondition {
                 | Value::Row(_)
                 | Value::Column(_) => false,
             },
-            MoveCondition::Not(move_condition) => {
+            Condition::Not(move_condition) => {
                 !move_condition.is_met(condition_check_context, chess_game_engine)
             }
-            MoveCondition::Or(lhs, rhs) => {
+            Condition::Or(lhs, rhs) => {
                 lhs.is_met(condition_check_context.clone(), chess_game_engine)
                     || rhs.is_met(condition_check_context, chess_game_engine)
             }
@@ -487,7 +487,7 @@ impl Iterator for VectorGenerator {
 /// of moving pieces cannot be implemented.
 ///
 /// There's a big complexity to perform specific operations. For instance,
-/// a try to verify [`MoveCondition::IsTrue`] might not be success for any
+/// a try to verify [`Condition::IsTrue`] might not be success for any
 /// value type. Therefore the verification is under explicit control and
 /// can be performed for available types, even if all types are combined
 /// in [Value] enumeration, though.
@@ -705,8 +705,24 @@ pub enum Action {
     /// Remove the state.
     RemoveState(Side<StateName>),
 
+    /// Remove the state only and only if these conditions are met.
+    RemoveStateIf {
+        name: Side<StateName>,
+        conditions: Vec<Condition>,
+    },
+
     /// Add a state.
-    AddState { name: Side<StateName>, value: Value },
+    AddState {
+        name: Side<StateName>,
+        value: Value,
+        lifetime: StateLifetimeDeclaration,
+    },
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub enum StateLifetimeDeclaration {
+    Eternal,
+    Halfmoves(NonZeroU32),
 }
 
 /// The 2D vector.

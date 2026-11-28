@@ -8,6 +8,7 @@ bevy = { git = "https://github.com/bevyengine/bevy", features = ["bevy_ui", "bev
 bevy_resvg = { git = "https://github.com/jarkz/bevy_resvg" }
 derive_builder = "0.20.2"
 derive_more = { version = "2.1.1", features = ["display"] }
+priority-queue = "2.7.0"
 ron = "0.12.3"
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
